@@ -7,7 +7,7 @@ RL Logging Board 是一个将 Reinforcement Learning from Human Feedback（RLHF�
 3. 更直观的看到每一个 step 高/低 reward 对应的 response 分布，用于`发现 reward hacking 的潜在 pattern`。
 4. （可选）直观进行 `RL & SFT 模型之间的对比`，包含 response、reward 在内的多个方面。
 
-> **⚠️ 注意：** RL Logging Board 仅进行指标可视化，<u>不包含训练框架本身</u>！该工具初衷并非是成为 tensorboard & wanDB 的平替，事实上我们在实做的时候也会同时使用 tensorboard 和该工具。对于一些数值类型的简单 metric（例如 reward_mean，response_length，loss 等）tensorboard 已经能很好的胜任，<u>而对于一些更细粒度的展示（如 token 级别的指标）我们会使用该工具进行辅助</u>。
+> **⚠️ 注意：** RL Logging Board 仅进行指标可视化，<u>不包含训练框架本身</u>！该工具初衷并非是成为 tensorboard & wanDB 的平替，事实上我们在实做的时候也会同时使用 tensorboard 和该工具。对于一些数值类型的简单 metric（例如 reward_mean，response_length，loss 等）tensorboard 已经能很好的胜任，<u>而对于一些更细粒度的展示（如 token 级别的指标）我们会使用该工具进行辅助</u>。 我们在 [[这个版本的 OpenRLHF](https://github.com/HarderThenHarder/OpenRLHF/tree/support-rl-logging-board)] 中集成了对这个工具的使用。
 
 <div align="center">
     <p></p>
