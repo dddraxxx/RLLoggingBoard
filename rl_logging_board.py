@@ -110,6 +110,7 @@ def load_log_file(
                             'valid_reward': [],
                             'ref_valid_reward': [],
                             'response_tokens_len': [],
+                            'ground_truth': []
                         }
                     elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step:
                             percentage = (i + 1) / mock_max_lines_num
@@ -612,6 +613,7 @@ def main_page():
                 'prompt', 
                 'response', 
                 'reward', 
+                'ground_truth',
                 'valid_reward', 
                 'avg_log_ratio', 
                 'sum_log_ratio', 
