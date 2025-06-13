@@ -22,6 +22,8 @@ Date: 2023/10/31
 import os
 import copy
 import traceback
+import argparse
+import sys
 
 try:
     import ujson as json
@@ -35,7 +37,7 @@ import streamlit as st
 
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.figure_factory as ff 
+import plotly.figure_factory as ff
 
 
 st.set_page_config(
@@ -45,9 +47,47 @@ st.set_page_config(
 )
 
 
+def parse_args():
+    """
+    Parse command line arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="RL Logging Board - Visualize RL training metrics",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python rl_logging_board.py
+  python rl_logging_board.py --log-root ./my_logs
+  python rl_logging_board.py --log-root /path/to/logs
+        """
+    )
+
+    parser.add_argument(
+        '--log-root',
+        type=str,
+        default='./rollout_samples',
+        help='Root directory containing log files (default: ./rollout_samples)'
+    )
+
+    return parser.parse_args()
+
+
+# Parse command line arguments
+try:
+    args = parse_args()
+    DEFAULT_LOG_ROOT = args.log_root
+except SystemExit:
+    # This happens when streamlit processes its own arguments
+    # Fall back to default value
+    DEFAULT_LOG_ROOT = './rollout_samples'
+
+
 def load_log_file(
     logdir: os.PathLike,
-    max_samples_each_step: int
+    max_samples_each_step: int,
+    step_freq: int,
+    start_step: int,
+    end_step: int
 ):
     """
     解析本地log文件。
@@ -55,31 +95,43 @@ def load_log_file(
     Args:
         logdir (os.PathLike): _description_
         max_samples_each_step (int): _description_
+        step_freq (int): 步骤采样频率，每隔step_freq步采样一次
+        start_step (int): 开始步骤，只处理大于等于此步骤的数据
+        end_step (int): 结束步骤，只处理小于等于此步骤的数据，-1表示不限制
     """
     st.session_state['logging_name'] = logdir
     st.session_state['max_samples_each_step'] = max_samples_each_step
+    st.session_state['step_freq'] = step_freq
+    st.session_state['start_step'] = start_step
+    st.session_state['end_step'] = end_step
     st.session_state['logging_data'] = {}
     error_lines, success_lines = 0, 0
-    
-    all_logs = os.listdir(logdir)
-    
+
+    # all_logs = os.listdir(logdir)
+    # search for any jsonl files end with _rank0.jsonl, search for any depth
+    all_logs = []
+    for root, dirs, files in os.walk(logdir):
+        for file in files:
+            if file.endswith('_rank0.jsonl'):
+                all_logs.append(os.path.relpath(os.path.join(root, file), logdir))
+
     progress_text = f"Processing all files..."
     loading_files_bar = st.progress(0., text=progress_text)
 
     progress_text = f"Processing each file samples..."
     loading_samples_bar = st.progress(0., text=progress_text)
-    
-    
+
+
     for log_index in range(len(all_logs)):
-        
+
         if not all_logs[log_index].endswith('.jsonl'):
             continue
-        
+
         rl_log_file = os.path.join(
-            logdir, 
+            logdir,
             all_logs[log_index]
         )
-        
+
         mock_max_lines_num = 10000
 
         with open(rl_log_file, 'r', encoding='utf8', errors='ignore') as f:
@@ -87,6 +139,17 @@ def load_log_file(
                 try:
                     data = json.loads(line)
                     data['step'] = int(data['step'])
+
+                    # Apply step range filtering
+                    if data['step'] < start_step:
+                        continue
+                    if end_step != -1 and data['step'] > end_step:
+                        continue
+
+                    # Apply step frequency filtering
+                    if data['step'] % step_freq != 0:
+                        continue
+
                     if data['step'] not in st.session_state['logging_data']:
                         st.session_state['logging_data'][data['step']] = {
                             'prompt': [],
@@ -116,14 +179,14 @@ def load_log_file(
                             percentage = (i + 1) / mock_max_lines_num
                             percentage = min(percentage, 1.0)
                             loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {i + 1} / {mock_max_lines_num} samples in each files...")
-                        
+
                     for key in st.session_state['logging_data'][data['step']]:
                         if key in data:
                             st.session_state['logging_data'][data['step']][key].append(data[key])
-                    
+
                     if 'response_tokens' in data:
                         st.session_state['logging_data'][data['step']]['response_tokens_len'].append(len(data['response_tokens']))
-                        
+
                     if 'logprobs' in data and 'ref_logprobs' in data:
                         logp = np.array(data['logprobs'])
                         ref_logp = np.array(data['ref_logprobs'])
@@ -137,13 +200,13 @@ def load_log_file(
                         st.session_state['logging_data'][data['step']]['sum_kl'].append(np.nansum(kl))
                         st.session_state['logging_data'][data['step']]['probs'].append(np.exp(logp).tolist())
                         st.session_state['logging_data'][data['step']]['ref_probs'].append(np.exp(ref_logp).tolist())
-                    
+
                     success_lines += 1
-                    
+
                 except:
                     print(traceback.format_exc())
                     error_lines += 1
-                
+
                 percentage = (i + 1) / mock_max_lines_num
                 percentage = min(percentage, 1.0)
                 loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {i + 1} / {mock_max_lines_num} samples...")
@@ -153,9 +216,9 @@ def load_log_file(
 
     file_percentage = (log_index + 1) / len(all_logs)
     loading_files_bar.progress(file_percentage, text=f"[{int(file_percentage * 100)}%] Loading {log_index + 1} / {len(all_logs)} files...")
-    
+
     st.toast(
-        f'Loaded {success_lines + error_lines} sample(s), sucess: {success_lines}, error: {error_lines}.', 
+        f'Loaded {success_lines + error_lines} sample(s), sucess: {success_lines}, error: {error_lines}.',
         icon='🎉'
     )
 
@@ -168,17 +231,17 @@ def load_log_file(
     st.session_state['max_step_index'] = max(all_steps)
     st.session_state['min_step_index'] = min(all_steps)
     st.session_state['step_gap'] = 1 if len(all_steps) < 2 else all_steps[1] - all_steps[0]
-    
+
     rewards_dict = {'step': [], 'reward': [], 'ref_reward': []}
     for step in st.session_state['logging_data']:
         st.session_state['logging_data'][step]['avg_reward'] = sum(st.session_state['logging_data'][step]['reward']) / len(st.session_state['logging_data'][step]['reward'])
-        
+
         current_step_resp_length = [len(resp) for resp in st.session_state['logging_data'][step]['response']]
         st.session_state['logging_data'][step]['avg_length'] = int(sum(current_step_resp_length) / len(current_step_resp_length))
-        
+
         current_step_ref_resp_length = [len(resp) for resp in st.session_state['logging_data'][step]['ref_response']]
         st.session_state['logging_data'][step]['avg_ref_length'] = int(sum(current_step_ref_resp_length) / len(current_step_ref_resp_length)) if len(current_step_ref_resp_length) else 0
-        
+
         if len(st.session_state['logging_data'][step]['ref_reward']):
             st.session_state['logging_data'][step]['avg_ref_reward'] = sum(st.session_state['logging_data'][step]['ref_reward']) / len(st.session_state['logging_data'][step]['ref_reward']) if len(st.session_state['logging_data'][step]['ref_reward']) else 0
         else:
@@ -186,7 +249,7 @@ def load_log_file(
         rewards_dict['step'].append(step)
         rewards_dict['reward'].append(st.session_state['logging_data'][step]['avg_reward'])
         rewards_dict['ref_reward'].append(st.session_state['logging_data'][step]['avg_ref_reward'])
-    
+
     rewards_df = pd.DataFrame.from_dict(rewards_dict)
     st.session_state['reward_df'] = rewards_df.set_index('step')
 
@@ -208,7 +271,7 @@ def plot_filled_line(
         colors (list): 每条折线的颜色列表（rgb）, e.g. -> ['255,171,171']
     """
     fig = go.Figure()
-    
+
     x_rev = x[::-1]
     for i in range(len(y_list_list)):
         y_list = y_list_list[i]
@@ -239,7 +302,7 @@ def plot_filled_line(
         ))
 
     fig.update_traces(mode='lines')
-    
+
     if title:
         fig.update_layout(
             title=title,
@@ -254,30 +317,31 @@ def init_sidebar():
     侧边栏实例化。
     """
     st.sidebar.markdown(
-        "<h1 style='text-align: center;'>📖 RL Logging Board</h1>", 
+        "<h1 style='text-align: center;'>📖 RL Logging Board</h1>",
         unsafe_allow_html=True
     )
 
     base_root_path = st.sidebar.text_input(
         "Log(s) Root Path",
-        value='./rollout_samples',
+        value=DEFAULT_LOG_ROOT,
+        help=f"Default from command line: {DEFAULT_LOG_ROOT}"
     )
-    
+
     if not os.path.exists(base_root_path):
         st.warning(f'Log(s) Root Path: `{base_root_path}` is not exists.', icon='⚠️')
         st.stop()
-    
+
     all_log_path_in_logdir = os.listdir(base_root_path)
-    
+
     if not all_log_path_in_logdir:
         st.warning('No log files found.')
-        st.code("""Logging Dir should be like:  
-Base Log Dir  
-    |__eval_topk_0_topp_1 (dir for evaluate logs)   
-    |   |__eval.jsonl  
-    |__topk_0_topp_1 (dir for training logs, only for rl logs)  
-        |__rollout_data_rank_0_1313.jsonl  
-    ...   
+        st.code("""Logging Dir should be like:
+Base Log Dir
+    |__eval_topk_0_topp_1 (dir for evaluate logs)
+    |   |__eval.jsonl
+    |__topk_0_topp_1 (dir for training logs, only for rl logs)
+        |__rollout_data_rank_0_1313.jsonl
+    ...
 """)
         st.stop()
 
@@ -286,7 +350,7 @@ Base Log Dir
         options=all_log_path_in_logdir,
         index=len(all_log_path_in_logdir) - 1
     )
-    
+
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
         help='当step batch size 过大时可能会造成平台卡顿，可设置阈值来下采样每个step的数据。',
@@ -294,24 +358,55 @@ Base Log Dir
         max_value=10240,
         min_value=1
     )
-    
+
+    step_freq = st.sidebar.number_input(
+        'Step Frequency',
+        help='每隔多少步采样一次，例如设置为2则只处理步骤0,2,4,6...，可以减少处理时间。',
+        value=1,
+        max_value=100,
+        min_value=1
+    )
+
+    start_step = st.sidebar.number_input(
+        'Start Step',
+        help='开始处理的步骤编号，只处理大于等于此步骤的数据。',
+        value=0,
+        min_value=0
+    )
+
+    end_step = st.sidebar.number_input(
+        'End Step',
+        help='结束处理的步骤编号，只处理小于等于此步骤的数据。设置为-1表示不限制结束步骤。',
+        value=-1,
+        min_value=-1
+    )
+
     load_btn = st.sidebar.button(
         "Load & View",
         use_container_width=True
     )
-    
+
     if load_btn and (
-        'logging_data' not in st.session_state 
-        or 
+        'logging_data' not in st.session_state
+        or
         log_name != st.session_state['logging_name']
         or
         max_samples_each_step != st.session_state.get('max_samples_each_step', -1)
+        or
+        step_freq != st.session_state.get('step_freq', -1)
+        or
+        start_step != st.session_state.get('start_step', -1)
+        or
+        end_step != st.session_state.get('end_step', -1)
     ):
         load_log_file(
-            os.path.join(base_root_path, log_name), 
-            max_samples_each_step
+            os.path.join(base_root_path, log_name),
+            max_samples_each_step,
+            step_freq,
+            start_step,
+            end_step
         )
-    
+
     with st.sidebar.expander('🧩 module setting', expanded=True):
         st.session_state['show_reward_logging'] = st.checkbox('Reward 曲线图', value=True)
         st.session_state['var_scaling'] = st.slider('Variance Scaling', min_value=0.1, max_value=1.0, value=0.2, help='Reward 曲线图阴影面积调整（对方差做 scaling）。')
@@ -347,18 +442,18 @@ def plot_filled_line(
         colors (list): 每条折线的颜色列表（rgb）, e.g. -> ['255,171,171']
     """
     fig = go.Figure()
-    
+
     x_rev = x[::-1]
     for i in range(len(y_list_list)):
         y_list = y_list_list[i]
         zero_shift_value = 0
         y_mean, y_lower, y_upper = [], [], []
-        
-        for idx, y in enumerate(y_list):    
+
+        for idx, y in enumerate(y_list):
             y_arr = np.array(y)
             if idx == 0 and st.session_state['zero_shift']:
                 zero_shift_value = np.nanmean(y_arr)
-            
+
             y_arr = y_arr - zero_shift_value
             mean, std = float(np.nanmean(y_arr)), float(np.nanstd(y_arr))
             std *= var_scaling
@@ -383,7 +478,7 @@ def plot_filled_line(
         ))
 
     fig.update_traces(mode='lines')
-    
+
     if title:
         fig.update_layout(
             title=title,
@@ -402,11 +497,11 @@ def main_page():
     else:
         if st.session_state['show_reward_logging']:
             step_reward_tab, step_kl_tab, resp_len_tab = st.tabs([
-                'Step-Reward', 
-                'Step-KL', 
+                'Step-Reward',
+                'Step-KL',
                 'Step-RespLen'
             ])
-            
+
             with step_reward_tab:
                 steps, reward, ref_reward, valid_reward, ref_valid_reward = [], [], [], [], []
                 for step, value_dict in st.session_state['logging_data'].items():
@@ -415,13 +510,13 @@ def main_page():
 
                     if value_dict['ref_reward']:
                         ref_reward.append(value_dict['ref_reward'])
-                    
+
                     if value_dict['valid_reward']:
                         valid_reward.append(value_dict['valid_reward'])
-                    
+
                     if value_dict['ref_valid_reward']:
                         ref_valid_reward.append(value_dict['ref_valid_reward'])
-                
+
                 all_curves = {
                     'ref_reward': {
                         'value': ref_reward,
@@ -430,26 +525,26 @@ def main_page():
                     'reward': {
                         'value': reward,
                         'color': '255,171,171'
-                    }, 
+                    },
                     'ref_valid_reward': {
                         'value': ref_valid_reward,
                         'color': '132,155,200'
-                    }, 
+                    },
                     'valid_reward': {
                         'value': valid_reward,
                         'color': '200,155,200'
                     }
                 }
-                
+
                 candidate_curves = [key for key in all_curves if all_curves[key]['value']]
-                
+
                 show_curves = st.multiselect(
                     'Show Rewards',
                     candidate_curves,
                     candidate_curves,
                     label_visibility='collapsed'
                 )
-                
+
                 reward_fig = plot_filled_line(
                     x=steps,
                     y_list_list=[all_curves[r]['value'] for r in show_curves],
@@ -466,7 +561,7 @@ def main_page():
 
                 if st.session_state['use_logp_as_kl']:
                     for step, value_dict in st.session_state['logging_data'].items():
-                        if all(value_dict['avg_log_ratio']): 
+                        if all(value_dict['avg_log_ratio']):
                             steps.append(step)
                             kl.append(value_dict['avg_log_ratio'])
                 else:
@@ -474,7 +569,7 @@ def main_page():
                         if all(value_dict['kl']):
                             steps.append(step)
                             kl.append(value_dict['avg_kl'])
-                
+
                 reward_fig = plot_filled_line(
                     x=steps,
                     y_list_list=[kl],
@@ -483,7 +578,7 @@ def main_page():
                     title='👾 KL Logging (Step level)'
                 )
                 st.plotly_chart(reward_fig, theme="streamlit", use_container_width=True)
-            
+
             with resp_len_tab:
                 steps, resp_len = [], []
 
@@ -500,15 +595,15 @@ def main_page():
                     title='👾 Response Length Logging (Step level)'
                 )
                 st.plotly_chart(resp_len_fig, theme="streamlit", use_container_width=True)
-        
+
         if st.session_state['show_response']:
             st.markdown('⚡️ **Each Step Response**')
-            
+
             if st.session_state['min_step_index'] == st.session_state['max_step_index']:
                 step_index = st.session_state['min_step_index']
             elif (
-                len(st.session_state['logging_data']) > 2 
-                and 
+                len(st.session_state['logging_data']) > 2
+                and
                 list(st.session_state['logging_data'].keys())[2] - list(st.session_state['logging_data'].keys())[1] != list(st.session_state['logging_data'].keys())[1] - list(st.session_state['logging_data'].keys())[0]
             ):
                 step_index = st.selectbox(
@@ -527,7 +622,7 @@ def main_page():
 
             cur_step_content_dict = st.session_state['logging_data'][step_index]
             cur_step_filtered_content_dict = copy.deepcopy(cur_step_content_dict)
-            
+
             cur_step_filtered_content_dict['prompt'] = []
             for prompt in cur_step_content_dict['prompt']:
                 if st.session_state['drop_pad']:
@@ -539,7 +634,7 @@ def main_page():
             cur_step_filtered_content_dict['response'] = [c.replace(st.session_state['pad_token'], '').strip() if st.session_state['drop_pad'] else c for c in cur_step_content_dict['response']]
             cur_step_filtered_content_dict['reward_gap'] = [r - ref_r for r, ref_r in zip(cur_step_content_dict['reward'], cur_step_content_dict['ref_reward'])]
             cur_step_filtered_content_dict['valid_reward_gap'] = [r - ref_r for r, ref_r in zip(cur_step_content_dict['reward'], cur_step_content_dict['valid_reward'])]
-            
+
             if st.session_state['show_charts']:
 
                 if not cur_step_filtered_content_dict['ref_reward']:
@@ -563,16 +658,16 @@ def main_page():
 
                     reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
                     fig = px.bar(
-                        reward_distribution_df, 
-                        x="sample_index", 
-                        y="reward", 
+                        reward_distribution_df,
+                        x="sample_index",
+                        y="reward",
                         color="tag",
                         barmode='group',
                         color_discrete_sequence=px.colors.diverging.Portland,
                         title="Reward in current batch samples"
                     )
                     st.plotly_chart(fig, theme="streamlit", use_container_width=True)
-                
+
                 with c2:                                                    # reward gap 分布
                     reward_distribution_dict = {
                         'sample_index': [i for i in range(len(cur_step_filtered_content_dict['reward_gap']))],
@@ -580,10 +675,10 @@ def main_page():
                     }
                     reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
                     fig = px.bar(
-                        reward_distribution_df, 
-                        x="sample_index", 
-                        y="reward_gap", 
-                        color="reward_gap", 
+                        reward_distribution_df,
+                        x="sample_index",
+                        y="reward_gap",
+                        color="reward_gap",
                         color_discrete_sequence=['red'],
                         title="Reward Gap (r - ref_r) in current batch"
                     )
@@ -601,8 +696,8 @@ def main_page():
                         group_labels = ['Rewards']
 
                     fig = ff.create_distplot(
-                        hist_data, 
-                        group_labels, 
+                        hist_data,
+                        group_labels,
                         bin_size=[.02, .02],
                         curve_type='normal'
                     )
@@ -610,34 +705,34 @@ def main_page():
                     st.plotly_chart(fig, use_container_width=True)
 
             showed_keys = [
-                'prompt', 
-                'response', 
-                'reward', 
+                'prompt',
+                'response',
+                'reward',
                 'ground_truth',
-                'valid_reward', 
-                'avg_log_ratio', 
-                'sum_log_ratio', 
-                'avg_kl', 
-                'sum_kl', 
-                'ref_response', 
-                'ref_reward', 
-                'ref_valid_reward', 
-                'reward_gap', 
+                'valid_reward',
+                'avg_log_ratio',
+                'sum_log_ratio',
+                'avg_kl',
+                'sum_kl',
+                'ref_response',
+                'ref_reward',
+                'ref_valid_reward',
+                'reward_gap',
                 'valid_reward_gap'
             ]
             candidate_keys = [k for k in showed_keys if cur_step_filtered_content_dict[k]]
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
             content_df = pd.DataFrame.from_dict(content_dict)
-            
+
             if st.session_state['show_batch_samples']:
                 st.dataframe(
-                    content_df, 
+                    content_df,
                     use_container_width=True,
                     height=350
                 )
 
-            if st.session_state['show_samples_pair']:    
-                
+            if st.session_state['show_samples_pair']:
+
                 c1, c2, c3 = st.columns([1, 1, 4])
                 with c1:
                     if step_index == st.session_state['min_step_index']:
@@ -654,7 +749,7 @@ def main_page():
                         value=f"{st.session_state['logging_data'][step_index]['avg_length']} 字",
                         delta=f'{delta_char} 字'
                     )
-                
+
                 with c2:                                                        # ref_model在当前step下的平均回复长度，delta为与上一个step的比较
                     try:
                         delta_char = 0 if step_index == st.session_state['min_step_index'] else st.session_state['logging_data'][step_index]['avg_ref_length'] - st.session_state['logging_data'][step_index-st.session_state['step_gap']]['avg_ref_length']
@@ -665,15 +760,15 @@ def main_page():
                         value=f"{st.session_state['logging_data'][step_index]['avg_ref_length']} 字",
                         delta=f'{delta_char} 字'
                     )
-                
+
                 with c3:
                     sample_index = st.number_input(
-                        f'Sample index in current step batch: ', 
+                        f'Sample index in current step batch: ',
                         min_value=0,
                         max_value=len(cur_step_filtered_content_dict['response']) - 1,
                         value=0
                     )
-                
+
                 # 单样本展示 response - ref_response 的回复
                 c1, c2, c3, c4 = st.columns([4, 4, 4, 2])
                 with c1:
@@ -708,7 +803,7 @@ def main_page():
                     st.markdown(':orange[Reward Gap]')
                     reward_gap = round(cur_step_filtered_content_dict["reward_gap"][sample_index], 4) if cur_step_filtered_content_dict["reward_gap"] else 0.
                     st.metric(
-                        ' ', 
+                        ' ',
                         value=reward_gap
                     )
 
@@ -723,56 +818,56 @@ def main_page():
                             icon='⚠️'
                         )
                         cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
-                    
+
                     show_values = st.multiselect(
                         'Select show value(s)',
                         ['token_reward', 'log_ratio', 'kl', 'token_value', 'logp', 'ref_logp', 'prob', 'ref_prob'],
                         ['token_reward', 'log_ratio', 'kl', 'token_value', 'logp', 'ref_logp', 'prob', 'ref_prob']
                     )
-                    
+
                     new_dict, index_list = {}, []
-                    
+
                     if st.session_state['drop_pad'] and cur_step_filtered_content_dict['response_tokens'][sample_index][-1] == st.session_state['pad_token']:
                         first_pad_token_idx = cur_step_filtered_content_dict['response_tokens'][sample_index].index(st.session_state['pad_token'])
                         response_tokens_without_pad_token = cur_step_filtered_content_dict['response_tokens'][sample_index][:first_pad_token_idx]
                     else:
                         response_tokens_without_pad_token = cur_step_filtered_content_dict['response_tokens'][sample_index]
-                    
+
                     for token_idx in range(len(response_tokens_without_pad_token)):
                         if cur_step_filtered_content_dict['response_tokens']:
                             resp_token = cur_step_filtered_content_dict['response_tokens'][sample_index][token_idx]
                             resp_token = f'{token_idx} - {resp_token}'
                             if resp_token not in new_dict:
                                 new_dict[resp_token] = []
-                        
+
                         if cur_step_filtered_content_dict['token_rewards']:
                             token_reward = cur_step_filtered_content_dict['token_rewards'][sample_index][token_idx]
                             if 'token_reward' in show_values:
                                 new_dict[resp_token].append(token_reward)
                                 if 'token_reward' not in index_list:
                                     index_list.append('token_reward')
-                        
+
                         if cur_step_filtered_content_dict['log_ratio']:
                             log_ratio = cur_step_filtered_content_dict['log_ratio'][sample_index][token_idx]
                             if 'log_ratio' in show_values:
                                 new_dict[resp_token].append(log_ratio)
                                 if 'log_ratio' not in index_list:
                                     index_list.append('log_ratio')
-                        
+
                         if cur_step_filtered_content_dict['kl']:
                             kl = cur_step_filtered_content_dict['kl'][sample_index][token_idx]
                             if 'kl' in show_values:
                                 new_dict[resp_token].append(kl)
                                 if 'kl' not in index_list:
                                     index_list.append('kl')
-                        
+
                         if cur_step_filtered_content_dict['values']:
                             value = cur_step_filtered_content_dict['values'][sample_index][token_idx]
                             if 'token_value' in show_values:
                                 new_dict[resp_token].append(value)
                                 if 'token_value' not in index_list:
                                     index_list.append('token_value')
-                        
+
                         if cur_step_filtered_content_dict['logprobs']:
                             logp = cur_step_filtered_content_dict['logprobs'][sample_index][token_idx]
                             if 'logp' in show_values:
@@ -786,37 +881,37 @@ def main_page():
                                 new_dict[resp_token].append(ref_logp)
                                 if 'ref_logp' not in index_list:
                                     index_list.append('ref_logp')
-                        
+
                         if cur_step_filtered_content_dict['probs']:
                             prob = cur_step_filtered_content_dict['probs'][sample_index][token_idx]
                             if 'prob' in show_values:
                                 new_dict[resp_token].append(prob)
                                 if 'prob' not in index_list:
                                     index_list.append('prob')
-                        
+
                         if cur_step_filtered_content_dict['ref_probs']:
                             ref_prob = cur_step_filtered_content_dict['ref_probs'][sample_index][token_idx]
                             if 'ref_prob' in show_values:
                                 new_dict[resp_token].append(ref_prob)
                                 if 'ref_prob' not in index_list:
                                     index_list.append('ref_prob')
-                                    
+
                     try:
                         token_level_df = pd.DataFrame.from_dict(new_dict)
                         renamed_index_dict = dict((i, name) for i, name in enumerate(index_list))
                         token_level_df.rename(
-                            index=renamed_index_dict, 
+                            index=renamed_index_dict,
                             inplace=True
                         )
-                        
+
                         st.dataframe(
-                            token_level_df.style.background_gradient(axis=1, cmap="binary"), 
+                            token_level_df.style.background_gradient(axis=1, cmap="binary"),
                             use_container_width=True
                         )
-                        
+
                         if st.session_state['show_token_heat_map']:
                             fig = px.imshow(
-                                token_level_df, 
+                                token_level_df,
                                 text_auto=True,
                                 aspect="auto",
                                 color_continuous_scale="balance",
