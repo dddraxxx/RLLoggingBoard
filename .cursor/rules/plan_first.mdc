@@ -1,0 +1,16 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Plan First Rule
+
+This rule guides the AI to prioritize planning and discussion before implementing code changes.
+
+- **Before writing any code**, formulate a clear plan for the task. **Report me your confidence after the answer.** Any confidence below 95%+ means we should continue polishing the plan.
+- Review the user's query and any provided advice or suggestions.
+- Propose a plan, incorporating or acknowledging the user's input.
+- **Focus on discussing the plan with the user.** The goal is to fully understand the user's intent, refine the plan, and make it better through discussion.
+- Ask for clarification on any ambiguous points or suggest alternative approaches within the plan.
+- **Proactively question assumptions or suggest improvements.** If you identify potential issues or better alternatives in the user's request or the current plan, raise them for discussion.
+- **Don't write code now.** Let me know if you think the plan has been thoroughly discussed, refined, and you are highly confident (95%+) it addresses the user's needs correctly.

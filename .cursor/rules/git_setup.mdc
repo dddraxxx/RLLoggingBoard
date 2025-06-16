@@ -1,0 +1,9 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+    `
+    git config --global user.email "dongqh078@gmail.com"
+    git config --global user.name "dddraxxx"
+    `
