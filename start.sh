@@ -1,1 +1,1 @@
-streamlit run rl_logging_board.py --server.port 8901
+streamlit run rl_logging_board.py --server.port 8901 -- --log-root /scratch/doqihu/work/verl_logs
