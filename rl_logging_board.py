@@ -35,6 +35,7 @@ import orjson as json
 import numpy as np
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -46,6 +47,67 @@ st.set_page_config(
     page_icon="📖",
     layout='wide'
 )
+
+
+def extract_box_coordinates(text):
+    """
+    Extract box coordinates in the format [x1,y1,x2,y2] from text.
+
+    Args:
+        text (str): Text content to search for coordinates
+
+    Returns:
+        list: List of tuples containing (x1, y1, x2, y2) coordinates
+    """
+    if not text:
+        return []
+
+    # Pattern to match [x1,y1,x2,y2] format with optional spaces
+    pattern = r'\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]'
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    coordinates = []
+    for match in matches:
+        try:
+            x1, y1, x2, y2 = map(float, match)
+            coordinates.append((int(x1), int(y1), int(x2), int(y2)))
+        except ValueError:
+            continue
+
+    return coordinates
+
+
+def crop_image_with_coordinates(image_path, coordinates):
+    """
+    Crop image using the provided coordinates.
+
+    Args:
+        image_path (str): Path to the image file
+        coordinates (tuple): (x1, y1, x2, y2) coordinates for cropping
+
+    Returns:
+        PIL.Image or None: Cropped image or None if error
+    """
+    try:
+        with Image.open(image_path) as img:
+            x1, y1, x2, y2 = coordinates
+
+            # Ensure coordinates are within image bounds
+            img_width, img_height = img.size
+            x1 = max(0, min(x1, img_width))
+            y1 = max(0, min(y1, img_height))
+            x2 = max(0, min(x2, img_width))
+            y2 = max(0, min(y2, img_height))
+
+            # Ensure x2 > x1 and y2 > y1
+            if x2 <= x1 or y2 <= y1:
+                return None
+
+            cropped = img.crop((x1, y1, x2, y2))
+            return cropped
+    except Exception as e:
+        st.error(f"Error cropping image: {e}")
+        return None
 
 
 def process_content_for_display(content):
@@ -211,7 +273,8 @@ def load_log_file(
                             'valid_reward': [],
                             'ref_valid_reward': [],
                             'response_tokens_len': [],
-                            'ground_truth': []
+                            'ground_truth': [],
+                            'image_path': []
                         }
                     elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step and max_samples_each_step > 0:
                         continue
@@ -403,7 +466,7 @@ Base Log Dir
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
         help='当step batch size 过大时可能会造成平台卡顿，可设置阈值来下采样每个step的数据。',
-        value=128,
+        value=256,
         max_value=10240,
         min_value=1
     )
@@ -766,7 +829,8 @@ def main_page():
                 'ref_reward',
                 'ref_valid_reward',
                 'reward_gap',
-                'valid_reward_gap'
+                'valid_reward_gap',
+                'image_path'
             ]
             candidate_keys = [k for k in showed_keys if cur_step_filtered_content_dict[k]]
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
@@ -818,45 +882,146 @@ def main_page():
                     )
 
                 # 单样本展示 response - ref_response 的回复
-                c1, c2, c3, c4 = st.columns([4, 4, 4, 2])
-                with c1:
-                    st.markdown('<font color="#B0C4DE">Prompt</font>', unsafe_allow_html=True)
-                    content = cur_step_filtered_content_dict["prompt"][sample_index].replace('\n', '  \n').replace('~', '～')
-                    content = process_content_for_display(content)
-                    st.markdown(
-                        f'<font color="#B0C4DE">{content}</font>',
-                        unsafe_allow_html=True
-                    )
-                with c2:
-                    st.markdown(':green[Response]')
-                    content = cur_step_filtered_content_dict["response"][sample_index].replace('\n', '  \n').replace('~', '～')
-                    content = process_content_for_display(content)
-                    st.markdown(
-                        f'<font color="#3DD56D">{content}</font>',
-                        unsafe_allow_html=True
-                    )
-                with c3:
-                    st.markdown(':blue[Ref Response]')
-                    if (
-                            "ref_response" in cur_step_filtered_content_dict
-                            and
-                            cur_step_filtered_content_dict["ref_response"]
-                    ):
-                        content = cur_step_filtered_content_dict["ref_response"][sample_index].replace('\n', '  \n').replace('~', '～')
-                        content = process_content_for_display(content)
-                        st.markdown(
-                            f'<font color="#60B4FF">{content}</font>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.info('No `ref_response` found in log line data.')
-                with c4:
-                    st.markdown(':orange[Reward Gap]')
-                    reward_gap = round(cur_step_filtered_content_dict["reward_gap"][sample_index], 4) if cur_step_filtered_content_dict["reward_gap"] else 0.
-                    st.metric(
-                        ' ',
-                        value=reward_gap
-                    )
+                # Column selection bar
+                available_columns = {
+                    'prompt': {'label': 'Prompt', 'color': '#B0C4DE', 'width': 4},
+                    'response': {'label': 'Response', 'color': '#3DD56D', 'width': 3},
+                    'ref_response': {'label': 'Ref Response', 'color': '#60B4FF', 'width': 3},
+                    'reward_gap': {'label': 'Reward Gap', 'color': '#FFA500', 'width': 2},
+                    'image_path': {'label': 'Image', 'color': '#FF69B4', 'width': 4}
+                }
+
+                # Filter available columns based on what data is present
+                present_columns = []
+                for col_name in available_columns.keys():
+                    if col_name == 'reward_gap':
+                        # reward_gap is calculated, so it's always available if we have reward data
+                        if cur_step_filtered_content_dict.get('reward'):
+                            present_columns.append(col_name)
+                    elif col_name in cur_step_filtered_content_dict and cur_step_filtered_content_dict[col_name]:
+                        present_columns.append(col_name)
+
+                if not present_columns:
+                    present_columns = ['prompt', 'response']  # fallback to basics
+                print("Present columns: ", present_columns)
+
+                selected_columns = st.multiselect(
+                    'Select columns to display:',
+                    options=present_columns,
+                    default=present_columns,
+                    format_func=lambda x: available_columns[x]['label']
+                )
+
+                if selected_columns:
+                    # Create dynamic columns based on selection
+                    column_widths = [available_columns[col]['width'] for col in selected_columns]
+                    columns = st.columns(column_widths)
+
+                    for i, col_name in enumerate(selected_columns):
+                        with columns[i]:
+                            col_info = available_columns[col_name]
+
+                            if col_name == 'prompt':
+                                st.markdown(f'<font color="{col_info["color"]}">Prompt</font>', unsafe_allow_html=True)
+                                content = cur_step_filtered_content_dict["prompt"][sample_index].replace('\n', '  \n').replace('~', '～')
+                                content = process_content_for_display(content)
+                                st.markdown(
+                                    f'<font color="{col_info["color"]}">{content}</font>',
+                                    unsafe_allow_html=True
+                                )
+
+                            elif col_name == 'response':
+                                st.markdown(':green[Response]')
+                                content = cur_step_filtered_content_dict["response"][sample_index].replace('\n', '  \n').replace('~', '～')
+                                content = process_content_for_display(content)
+                                st.markdown(
+                                    f'<font color="{col_info["color"]}">{content}</font>',
+                                    unsafe_allow_html=True
+                                )
+
+                            elif col_name == 'ref_response':
+                                st.markdown(':blue[Ref Response]')
+                                if (
+                                        "ref_response" in cur_step_filtered_content_dict
+                                        and
+                                        cur_step_filtered_content_dict["ref_response"]
+                                ):
+                                    content = cur_step_filtered_content_dict["ref_response"][sample_index].replace('\n', '  \n').replace('~', '～')
+                                    content = process_content_for_display(content)
+                                    st.markdown(
+                                        f'<font color="{col_info["color"]}">{content}</font>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.info('No `ref_response` found in log line data.')
+
+                            elif col_name == 'reward_gap':
+                                st.markdown(':orange[Reward Gap]')
+                                reward_gap = round(cur_step_filtered_content_dict["reward_gap"][sample_index], 4) if cur_step_filtered_content_dict["reward_gap"] else 0.
+                                st.metric(
+                                    ' ',
+                                    value=reward_gap
+                                )
+
+                            elif col_name == 'image_path':
+                                st.markdown('<font color="#FF69B4">Image</font>', unsafe_allow_html=True)
+                                if (
+                                        "image_path" in cur_step_filtered_content_dict
+                                        and
+                                        cur_step_filtered_content_dict["image_path"]
+                                        and
+                                        sample_index < len(cur_step_filtered_content_dict["image_path"])
+                                ):
+                                    image_path = cur_step_filtered_content_dict["image_path"][sample_index]
+                                    if image_path and os.path.exists(image_path):
+                                        try:
+                                            # Display original image
+                                            st.image(image_path, caption=f"Image: {os.path.basename(image_path)}", use_container_width=True)
+
+                                            # Extract box coordinates from response
+                                            response_text = cur_step_filtered_content_dict["response"][sample_index] if "response" in cur_step_filtered_content_dict else ""
+                                            coordinates_list = extract_box_coordinates(response_text)
+
+                                            if coordinates_list:
+                                                st.markdown("**Detected Boxes:**")
+
+                                                # Create 2-column layout for cropped images
+                                                for idx in range(0, len(coordinates_list), 2):
+                                                    col1, col2 = st.columns(2)
+
+                                                    # First image in the row
+                                                    coords = coordinates_list[idx]
+                                                    cropped_img = crop_image_with_coordinates(image_path, coords)
+                                                    with col1:
+                                                        if cropped_img is not None:
+                                                            st.image(
+                                                                cropped_img,
+                                                                caption=f"Box {idx+1}: [{coords[0]},{coords[1]},{coords[2]},{coords[3]}]",
+                                                                use_container_width=True
+                                                            )
+                                                        else:
+                                                            st.warning(f"Invalid coordinates for Box {idx+1}: {coords}")
+
+                                                    # Second image in the row (if exists)
+                                                    if idx + 1 < len(coordinates_list):
+                                                        coords = coordinates_list[idx + 1]
+                                                        cropped_img = crop_image_with_coordinates(image_path, coords)
+                                                        with col2:
+                                                            if cropped_img is not None:
+                                                                st.image(
+                                                                    cropped_img,
+                                                                    caption=f"Box {idx+2}: [{coords[0]},{coords[1]},{coords[2]},{coords[3]}]",
+                                                                    use_container_width=True
+                                                                )
+                                                            else:
+                                                                st.warning(f"Invalid coordinates for Box {idx+2}: {coords}")
+                                        except Exception as e:
+                                            st.error(f"Error loading image: {e}")
+                                            st.text(f"Path: {image_path}")
+                                    else:
+                                        st.info(f'Image not found: {image_path}')
+                                else:
+                                    st.info('No `image_path` found in log line data.')
 
                 # 展示更详细的 token-level 的信息
                 if 'token_rewards' in cur_step_filtered_content_dict and cur_step_filtered_content_dict['token_rewards']:
