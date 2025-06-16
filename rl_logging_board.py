@@ -837,8 +837,59 @@ def main_page():
             content_df = pd.DataFrame.from_dict(content_dict)
 
             if st.session_state['show_batch_samples']:
+                # Add filter functionality
+                with st.expander("🔍 Filter Samples", expanded=False):
+                    st.markdown("**Filter Expression Examples:**")
+                    st.code("""
+# Filter by reward value
+reward > 0.5
+
+# Filter by reward gap
+reward_gap > 0.1
+
+# Filter by response length (if response is string)
+response.str.len() > 100
+
+# Filter by text content
+response.str.contains('error', case=False, na=False)
+
+# Multiple conditions
+(reward > 0.3) & (reward_gap > 0.05)
+
+# Filter by ground truth availability
+ground_truth.notna()
+                    """, language="python")
+
+                    filter_expression = st.text_input(
+                        "Enter filter expression:",
+                        value="",
+                        help="Use column names and pandas query syntax. Leave empty to show all rows.",
+                        placeholder="e.g., reward > 0.5"
+                    )
+
+                # Apply filter if expression is provided
+                filtered_df = content_df
+                filter_error = None
+
+                if filter_expression.strip():
+                    try:
+                        filtered_df = content_df.query(filter_expression)
+
+                        if len(filtered_df) == 0:
+                            st.warning(f"Filter returned 0 rows out of {len(content_df)} total rows.")
+                        else:
+                            st.info(f"Showing {len(filtered_df)} out of {len(content_df)} rows after filtering.")
+
+                    except Exception as e:
+                        filter_error = str(e)
+                        st.error(f"Filter expression error: {filter_error}")
+                        st.info("Showing all rows due to filter error.")
+                        filtered_df = content_df
+                else:
+                    st.info(f"Showing all {len(content_df)} rows (no filter applied).")
+
                 st.dataframe(
-                    content_df,
+                    filtered_df,
                     use_container_width=True,
                     height=350
                 )
