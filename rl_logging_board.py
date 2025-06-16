@@ -21,15 +21,16 @@ Date: 2023/10/31
 """
 import os
 import copy
+from pathlib import Path
+import time
 import traceback
 import argparse
 import sys
+import html
+import re
 
-try:
-    import ujson as json
-except:
-    import json
-    print('`pip install ujson` can be faster.')
+import orjson as json
+
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,40 @@ st.set_page_config(
     page_icon="📖",
     layout='wide'
 )
+
+
+def process_content_for_display(content):
+    """
+    Process content for safe HTML display by:
+    1. HTML escaping tags to prevent interpretation as HTML
+    2. Compressing repeated <|image_pad|> tokens to <|image_pad|>*[n] format
+
+    Args:
+        content (str): Raw content string
+
+    Returns:
+        str: Processed content safe for HTML display
+    """
+    if not content:
+        return content
+
+    # HTML escape to prevent tag interpretation
+    content = html.escape(content)
+
+    # Compress repeated <|image_pad|> tokens
+    # Find all consecutive occurrences of <|image_pad|>
+    def compress_image_pads(match):
+        repeated_token = match.group(0)
+        count = repeated_token.count('&lt;|image_pad|&gt;')  # HTML escaped version
+        if count > 1:
+            return f'&lt;|image_pad|&gt;*[{count}]'
+        return repeated_token
+
+    # Pattern to match consecutive <|image_pad|> tokens (HTML escaped)
+    pattern = r'(?:&lt;\|image_pad\|&gt;)+'
+    content = re.sub(pattern, compress_image_pads, content)
+
+    return content
 
 
 def parse_args():
@@ -115,7 +150,8 @@ def load_log_file(
             if file.endswith('_rank0.jsonl'):
                 all_logs.append(os.path.relpath(os.path.join(root, file), logdir))
 
-    progress_text = f"Processing all files..."
+    logs_names = [os.path.basename(log) for log in all_logs]
+    progress_text = f"Processing all files..." + ','.join(logs_names)
     loading_files_bar = st.progress(0., text=progress_text)
 
     progress_text = f"Processing each file samples..."
@@ -132,9 +168,11 @@ def load_log_file(
             all_logs[log_index]
         )
 
-        mock_max_lines_num = 10000
+        # Get actual file size for accurate progress tracking
+        file_size = os.path.getsize(rl_log_file)
 
-        with open(rl_log_file, 'r', encoding='utf8', errors='ignore') as f:
+        with open(rl_log_file, 'rb') as f:
+            start_time = time.time()
             for i, line in enumerate(f):
                 try:
                     data = json.loads(line)
@@ -175,10 +213,8 @@ def load_log_file(
                             'response_tokens_len': [],
                             'ground_truth': []
                         }
-                    elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step:
-                            percentage = (i + 1) / mock_max_lines_num
-                            percentage = min(percentage, 1.0)
-                            loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {i + 1} / {mock_max_lines_num} samples in each files...")
+                    elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step and max_samples_each_step > 0:
+                        continue
 
                     for key in st.session_state['logging_data'][data['step']]:
                         if key in data:
@@ -207,9 +243,15 @@ def load_log_file(
                     print(traceback.format_exc())
                     error_lines += 1
 
-                percentage = (i + 1) / mock_max_lines_num
-                percentage = min(percentage, 1.0)
-                loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {i + 1} / {mock_max_lines_num} samples...")
+                # Update progress based on actual file position
+                current_position = f.tell()
+                percentage = current_position / file_size
+                size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
+                size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
+                current_size = current_position / size_factor
+                total_size = file_size / size_factor
+                estiamte_finish_time = (time.time() - start_time) / percentage * (1 - percentage)
+                loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {current_size:,.1f} / {total_size:,.1f} {size_unit} ({i + 1} lines)... {estiamte_finish_time:.1f}s")
 
     percentage = 1.0
     loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {(success_lines + error_lines)} / {(success_lines + error_lines)} samples...")
@@ -331,7 +373,14 @@ def init_sidebar():
         st.warning(f'Log(s) Root Path: `{base_root_path}` is not exists.', icon='⚠️')
         st.stop()
 
-    all_log_path_in_logdir = os.listdir(base_root_path)
+    # all_log_path_in_logdir = os.listdir(base_root_path)
+    all_log_path_in_logdir = []
+    for root, dirs, files in os.walk(base_root_path):
+        for file in files:
+            if file.endswith('_rank0.jsonl'):
+                all_log_path_in_logdir.append(
+                    (Path(root, file).relative_to(base_root_path)).parent.as_posix()
+                )
 
     if not all_log_path_in_logdir:
         st.warning('No log files found.')
@@ -363,7 +412,6 @@ Base Log Dir
         'Step Frequency',
         help='每隔多少步采样一次，例如设置为2则只处理步骤0,2,4,6...，可以减少处理时间。',
         value=1,
-        max_value=100,
         min_value=1
     )
 
@@ -774,6 +822,7 @@ def main_page():
                 with c1:
                     st.markdown('<font color="#B0C4DE">Prompt</font>', unsafe_allow_html=True)
                     content = cur_step_filtered_content_dict["prompt"][sample_index].replace('\n', '  \n').replace('~', '～')
+                    content = process_content_for_display(content)
                     st.markdown(
                         f'<font color="#B0C4DE">{content}</font>',
                         unsafe_allow_html=True
@@ -781,6 +830,7 @@ def main_page():
                 with c2:
                     st.markdown(':green[Response]')
                     content = cur_step_filtered_content_dict["response"][sample_index].replace('\n', '  \n').replace('~', '～')
+                    content = process_content_for_display(content)
                     st.markdown(
                         f'<font color="#3DD56D">{content}</font>',
                         unsafe_allow_html=True
@@ -793,6 +843,7 @@ def main_page():
                             cur_step_filtered_content_dict["ref_response"]
                     ):
                         content = cur_step_filtered_content_dict["ref_response"][sample_index].replace('\n', '  \n').replace('~', '～')
+                        content = process_content_for_display(content)
                         st.markdown(
                             f'<font color="#60B4FF">{content}</font>',
                             unsafe_allow_html=True
@@ -814,7 +865,7 @@ def main_page():
                     logp_len = len(cur_step_filtered_content_dict['logprobs'][sample_index])
                     if resp_token_len != logp_len:
                         st.info(
-                            f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by <PAD> tokens, CLIP response tokens!',
+                            f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by &lt;PAD&gt; tokens, CLIP response tokens!',
                             icon='⚠️'
                         )
                         cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
