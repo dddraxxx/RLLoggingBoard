@@ -41,6 +41,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
+# Import image actions
+from image_actions import (
+    get_image_action_registry,
+    display_image_with_actions,
+)
+
 
 st.set_page_config(
     page_title="RL Logging Board",
@@ -49,65 +55,8 @@ st.set_page_config(
 )
 
 
-def extract_box_coordinates(text):
-    """
-    Extract box coordinates in the format [x1,y1,x2,y2] from text.
-
-    Args:
-        text (str): Text content to search for coordinates
-
-    Returns:
-        list: List of tuples containing (x1, y1, x2, y2) coordinates
-    """
-    if not text:
-        return []
-
-    # Pattern to match [x1,y1,x2,y2] format with optional spaces
-    pattern = r'\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]'
-    matches = re.findall(pattern, text, re.DOTALL)
-
-    coordinates = []
-    for match in matches:
-        try:
-            x1, y1, x2, y2 = map(float, match)
-            coordinates.append((int(x1), int(y1), int(x2), int(y2)))
-        except ValueError:
-            continue
-
-    return coordinates
-
-
-def crop_image_with_coordinates(image_path, coordinates):
-    """
-    Crop image using the provided coordinates.
-
-    Args:
-        image_path (str): Path to the image file
-        coordinates (tuple): (x1, y1, x2, y2) coordinates for cropping
-
-    Returns:
-        PIL.Image or None: Cropped image or None if error
-    """
-    try:
-        with Image.open(image_path) as img:
-            x1, y1, x2, y2 = coordinates
-
-            # Ensure coordinates are within image bounds
-            img_width, img_height = img.size
-            x1 = max(0, min(x1, img_width))
-            y1 = max(0, min(y1, img_height))
-            x2 = max(0, min(x2, img_width))
-            y2 = max(0, min(y2, img_height))
-
-            # Ensure x2 > x1 and y2 > y1
-            if x2 <= x1 or y2 <= y1:
-                return None
-
-            cropped = img.crop((x1, y1, x2, y2))
-            return cropped
-    except Exception as e:
-        st.error(f"Error cropping image: {e}")
-        return None
+# Get the global registry instance from the image_actions module
+IMAGE_ACTION_REGISTRY = get_image_action_registry()
 
 
 def process_content_for_display(content):
@@ -841,22 +790,11 @@ def main_page():
                 with st.expander("🔍 Filter Samples", expanded=False):
                     st.markdown("**Filter Expression Examples:**")
                     st.code("""
-# Filter by reward value
 reward > 0.5
-
-# Filter by reward gap
 reward_gap > 0.1
-
-# Filter by response length (if response is string)
 response.str.len() > 100
-
-# Filter by text content
 response.str.contains('error', case=False, na=False)
-
-# Multiple conditions
 (reward > 0.3) & (reward_gap > 0.05)
-
-# Filter by ground truth availability
 ground_truth.notna()
                     """, language="python")
 
@@ -1024,53 +962,7 @@ ground_truth.notna()
                                         sample_index < len(cur_step_filtered_content_dict["image_path"])
                                 ):
                                     image_path = cur_step_filtered_content_dict["image_path"][sample_index]
-                                    if image_path and os.path.exists(image_path):
-                                        try:
-                                            # Display original image
-                                            st.image(image_path, caption=f"Image: {os.path.basename(image_path)}", use_container_width=True)
-
-                                            # Extract box coordinates from response
-                                            response_text = cur_step_filtered_content_dict["response"][sample_index] if "response" in cur_step_filtered_content_dict else ""
-                                            coordinates_list = extract_box_coordinates(response_text)
-
-                                            if coordinates_list:
-                                                st.markdown("**Detected Boxes:**")
-
-                                                # Create 2-column layout for cropped images
-                                                for idx in range(0, len(coordinates_list), 2):
-                                                    col1, col2 = st.columns(2)
-
-                                                    # First image in the row
-                                                    coords = coordinates_list[idx]
-                                                    cropped_img = crop_image_with_coordinates(image_path, coords)
-                                                    with col1:
-                                                        if cropped_img is not None:
-                                                            st.image(
-                                                                cropped_img,
-                                                                caption=f"Box {idx+1}: [{coords[0]},{coords[1]},{coords[2]},{coords[3]}]",
-                                                                use_container_width=True
-                                                            )
-                                                        else:
-                                                            st.warning(f"Invalid coordinates for Box {idx+1}: {coords}")
-
-                                                    # Second image in the row (if exists)
-                                                    if idx + 1 < len(coordinates_list):
-                                                        coords = coordinates_list[idx + 1]
-                                                        cropped_img = crop_image_with_coordinates(image_path, coords)
-                                                        with col2:
-                                                            if cropped_img is not None:
-                                                                st.image(
-                                                                    cropped_img,
-                                                                    caption=f"Box {idx+2}: [{coords[0]},{coords[1]},{coords[2]},{coords[3]}]",
-                                                                    use_container_width=True
-                                                                )
-                                                            else:
-                                                                st.warning(f"Invalid coordinates for Box {idx+2}: {coords}")
-                                        except Exception as e:
-                                            st.error(f"Error loading image: {e}")
-                                            st.text(f"Path: {image_path}")
-                                    else:
-                                        st.info(f'Image not found: {image_path}')
+                                    display_image_with_actions(image_path, cur_step_filtered_content_dict["response"][sample_index])
                                 else:
                                     st.info('No `image_path` found in log line data.')
 
