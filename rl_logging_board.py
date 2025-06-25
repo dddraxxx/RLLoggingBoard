@@ -59,6 +59,35 @@ st.set_page_config(
 IMAGE_ACTION_REGISTRY = get_image_action_registry()
 
 
+def load_common_filters():
+    """
+    Load common filter expressions from configuration file.
+
+    Returns:
+        list: List of filter expression strings, or empty list if file not found
+    """
+    try:
+        # Look for common_filters.json in the same directory as this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        filters_path = os.path.join(script_dir, 'common_filters.json')
+
+        if os.path.exists(filters_path):
+            with open(filters_path, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read())
+                return data.get('common_filters', [])
+        else:
+            # Return default filters if file doesn't exist
+            return [
+                "response.str.contains('tool_call', case=False, na=False)",
+                "response.str.contains('mark_point', case=False, na=False)",
+                "response.str.contains('zoom_in', case=False, na=False)",
+                "response.str.contains('draw_line', case=False, na=False)"
+            ]
+    except Exception as e:
+        st.error(f"Error loading common filters: {e}")
+        return []
+
+
 def process_content_for_display(content):
     """
     Process content for safe HTML display by:
@@ -366,6 +395,119 @@ def plot_filled_line(
     return fig
 
 
+@st.cache_data
+def format_log_name(log_path, max_length=40):
+    """
+    Format log path for better display in selector.
+
+    Args:
+        log_path (str): Original log path
+        max_length (int): Maximum display length
+
+    Returns:
+        str: Formatted log name for display
+    """
+    if len(log_path) <= max_length:
+        return log_path
+
+    # Split path and keep important parts
+    parts = log_path.split('/')
+    if len(parts) <= 2:
+        return log_path
+
+    # Keep first and last parts, truncate middle
+    first_part = parts[0]
+    last_part = parts[-1]
+
+    if len(first_part) + len(last_part) + 5 <= max_length:  # 5 for ".../"
+        return f"{first_part}/.../{last_part}"
+    else:
+        # If still too long, truncate the last part
+        available_length = max_length - len(first_part) - 5
+        if available_length > 10:
+            return f"{first_part}/.../{last_part[:available_length-3]}..."
+        else:
+            return f".../{last_part}"
+
+
+@st.cache_data
+def get_log_directories(base_root_path):
+    """
+    Cached function to scan for log directories.
+
+    Args:
+        base_root_path (str): Base directory to scan
+
+    Returns:
+        list: List of log directory paths
+    """
+    base_path = Path(base_root_path)
+    start_time = time.time()
+    all_log_path_in_logdir = [
+        file.parent.relative_to(base_path).as_posix()
+        for file in base_path.glob('**/*_rank0.jsonl')
+    ]
+    elapsed_time = time.time() - start_time
+    print(f"Time taken to scan log directories: {elapsed_time:.2f} seconds")
+    # Remove duplicates and sort
+    return sorted(list(set(all_log_path_in_logdir)))
+
+
+def create_log_selector(all_log_paths, base_root_path, current_selection=None):
+    """
+    Create an improved log selector with expandable interface.
+
+    Args:
+        all_log_paths (list): List of available log paths
+        base_root_path (str): Base root path for constructing full paths
+        current_selection (str): Currently selected log path
+
+    Returns:
+        str: Selected log path
+    """
+    if not all_log_paths:
+        return None
+
+    # Initialize session state for log selector if not exists
+    if 'selected_log_index' not in st.session_state:
+        st.session_state.selected_log_index = len(all_log_paths) - 1
+
+    # Ensure the index is valid
+    if st.session_state.selected_log_index >= len(all_log_paths):
+        st.session_state.selected_log_index = len(all_log_paths) - 1
+
+    with st.sidebar.expander("📁 Choose Different Log Directory", expanded=True):
+        st.markdown(f"**Available Logs ({len(all_log_paths)} found):**")
+
+        # Create formatted options - cached for performance
+        formatted_options = [f"{i+1:2d}. {format_log_name(log_path)}" for i, log_path in enumerate(all_log_paths)]
+
+        # Radio button selection - this gives us the CURRENT selection immediately
+        selected_option_index = st.radio(
+            "Select log directory:",
+            range(len(all_log_paths)),
+            index=st.session_state.selected_log_index,
+            format_func=lambda x: formatted_options[x],
+            key="log_selector_radio"
+        )
+
+        # Update session state - no explicit rerun needed, Streamlit handles it
+        st.session_state.selected_log_index = selected_option_index
+
+        # Show preview of selected path
+        preview_path = os.path.join(base_root_path, all_log_paths[selected_option_index])
+        st.caption(f"**Preview:** `{preview_path}`")
+
+    # Use the CURRENT selection (from radio button) for immediate path display
+    current_log = all_log_paths[selected_option_index]
+    full_current_path = os.path.join(base_root_path, current_log)
+
+    st.sidebar.success(f"`{full_current_path}`")
+    st.sidebar.markdown("---")
+
+    return all_log_paths[selected_option_index]
+
+
 def init_sidebar():
     """
     侧边栏实例化。
@@ -385,14 +527,8 @@ def init_sidebar():
         st.warning(f'Log(s) Root Path: `{base_root_path}` is not exists.', icon='⚠️')
         st.stop()
 
-    # all_log_path_in_logdir = os.listdir(base_root_path)
-    all_log_path_in_logdir = []
-    for root, dirs, files in os.walk(base_root_path):
-        for file in files:
-            if file.endswith('_rank0.jsonl'):
-                all_log_path_in_logdir.append(
-                    (Path(root, file).relative_to(base_root_path)).parent.as_posix()
-                )
+        # Use cached function for directory scanning - much faster on reruns
+    all_log_path_in_logdir = get_log_directories(base_root_path)
 
     if not all_log_path_in_logdir:
         st.warning('No log files found.')
@@ -406,11 +542,8 @@ Base Log Dir
 """)
         st.stop()
 
-    log_name = st.sidebar.selectbox(
-        'Choose Log Name',
-        options=all_log_path_in_logdir,
-        index=len(all_log_path_in_logdir) - 1
-    )
+    # Use the improved log selector
+    log_name = create_log_selector(all_log_path_in_logdir, base_root_path)
 
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
@@ -418,6 +551,11 @@ Base Log Dir
         value=256,
         max_value=10240,
         min_value=1
+    )
+
+    load_btn = st.sidebar.button(
+        "Load & View",
+        use_container_width=True
     )
 
     step_freq = st.sidebar.number_input(
@@ -439,11 +577,6 @@ Base Log Dir
         help='结束处理的步骤编号，只处理小于等于此步骤的数据。设置为-1表示不限制结束步骤。',
         value=-1,
         min_value=-1
-    )
-
-    load_btn = st.sidebar.button(
-        "Load & View",
-        use_container_width=True
     )
 
     if load_btn and (
@@ -482,7 +615,7 @@ Base Log Dir
         st.session_state['show_charts'] = st.checkbox('Show Charts', value=True)
         st.session_state['show_batch_samples'] = st.checkbox('Show Batch Samples', value=True)
         st.session_state['show_samples_pair'] = st.checkbox('Show Samples Pair', value=True)
-        st.session_state['show_token_heat_map'] = st.checkbox('Show Heat Map', value=True)
+        st.session_state['show_token_heat_map'] = st.checkbox('Show Heat Map', value=False)
 
 def plot_filled_line(
     x: list,
@@ -786,48 +919,119 @@ def main_page():
             content_df = pd.DataFrame.from_dict(content_dict)
 
             if st.session_state['show_batch_samples']:
-                # Add filter functionality
-                with st.expander("🔍 Filter Samples", expanded=False):
-                    st.markdown("**Filter Expression Examples:**")
-                    st.code("""
+                # Compact filter functionality
+                st.markdown("**🔍 Filter Samples**")
+
+                # Load common filters
+                common_filters = load_common_filters()
+
+                # Create filter interface with common filters
+                filter_col1, filter_col2, filter_col3 = st.columns([3, 2, 1])
+
+                with filter_col1:
+                    filter_expression = st.text_input(
+                        "Filter expression:",
+                        value=st.session_state.get('last_filter_expression', ''),
+                        help="Use pandas query syntax. Examples: reward > 0.5, response.str.len() > 100",
+                        placeholder="e.g., reward > 0.5",
+                        label_visibility="collapsed"
+                    )
+                    # Remember the last filter expression
+                    if filter_expression != st.session_state.get('last_filter_expression', ''):
+                        st.session_state.last_filter_expression = filter_expression
+
+                with filter_col2:
+                    st.write("")  # Spacer
+
+                with filter_col3:
+                    filter_enabled = st.checkbox(
+                        "Enable Filter",
+                        value=True,
+                        key="filter_enabled_checkbox"
+                    )
+
+                # Common filter cards
+                if common_filters:
+                    cols = st.columns(len(common_filters))
+                    for i, filter_expr in enumerate(common_filters):
+                        with cols[i]:
+                            if st.button(
+                                filter_expr,
+                                key=f"filter_btn_{i}",
+                                use_container_width=True
+                            ):
+                                st.session_state.last_filter_expression = filter_expr
+                                st.rerun()
+
+                # Apply filter if enabled and expression is provided
+                filtered_df = content_df
+                filter_error = None
+                filter_status_msg = ""
+
+                if filter_enabled and filter_expression.strip():
+                    try:
+                        filtered_df = content_df.query(filter_expression)
+                        if len(filtered_df) == 0:
+                            filter_status_msg = f"⚠️ Filter returned 0 rows out of {len(content_df)} total"
+                        else:
+                            filter_status_msg = f"✅ Showing {len(filtered_df)} out of {len(content_df)} rows (filtered)"
+                    except Exception as e:
+                        filter_error = str(e)
+                        filter_status_msg = f"❌ Filter error: {filter_error}"
+                        filtered_df = content_df
+                else:
+                    filter_status_msg = f"📊 Showing all {len(content_df)} rows (no filter)"
+
+                # Status and examples in one row
+                status_col, examples_col = st.columns([2, 1])
+
+                with status_col:
+                    if filter_enabled and filter_expression.strip():
+                        if filter_error:
+                            st.error(filter_status_msg)
+                            st.info("Showing all rows due to filter error.")
+                        elif len(filtered_df) == 0:
+                            st.warning(filter_status_msg)
+                        else:
+                            st.success(filter_status_msg)
+                    else:
+                        st.info(filter_status_msg)
+
+                with examples_col:
+                    with st.expander("📖 Filter Examples", expanded=False):
+                        st.code("""
 reward > 0.5
 reward_gap > 0.1
 response.str.len() > 100
 response.str.contains('error', case=False, na=False)
 (reward > 0.3) & (reward_gap > 0.05)
 ground_truth.notna()
-                    """, language="python")
+                        """, language="python")
 
-                    filter_expression = st.text_input(
-                        "Enter filter expression:",
-                        value="",
-                        help="Use column names and pandas query syntax. Leave empty to show all rows.",
-                        placeholder="e.g., reward > 0.5"
-                    )
+                # Column selection functionality
+                st.markdown("**🔧 Select Columns to Display**")
+                available_columns = list(filtered_df.columns)
 
-                # Apply filter if expression is provided
-                filtered_df = content_df
-                filter_error = None
+                # Default columns (exclude ref_reward from default)
+                default_columns = [col for col in available_columns if col not in ['ref_reward', 'image_path']]
 
-                if filter_expression.strip():
-                    try:
-                        filtered_df = content_df.query(filter_expression)
+                selected_columns = st.multiselect(
+                    "Choose columns to display:",
+                    options=available_columns,
+                    default=default_columns,
+                    help="Select which columns to show in the dataframe below",
+                    label_visibility="collapsed"
+                )
 
-                        if len(filtered_df) == 0:
-                            st.warning(f"Filter returned 0 rows out of {len(content_df)} total rows.")
-                        else:
-                            st.info(f"Showing {len(filtered_df)} out of {len(content_df)} rows after filtering.")
-
-                    except Exception as e:
-                        filter_error = str(e)
-                        st.error(f"Filter expression error: {filter_error}")
-                        st.info("Showing all rows due to filter error.")
-                        filtered_df = content_df
+                # Display dataframe with selected columns
+                if selected_columns:
+                    display_df = filtered_df[selected_columns]
                 else:
-                    st.info(f"Showing all {len(content_df)} rows (no filter applied).")
+                    display_df = filtered_df
+                    st.warning("No columns selected. Showing all columns.")
 
                 st.dataframe(
-                    filtered_df,
+                    display_df,
                     use_container_width=True,
                     height=350
                 )
@@ -863,12 +1067,18 @@ ground_truth.notna()
                     )
 
                 with c3:
-                    sample_index = st.number_input(
-                        f'Sample index in current step batch: ',
-                        min_value=0,
-                        max_value=len(cur_step_filtered_content_dict['response']) - 1,
-                        value=0
-                    )
+                    # Limit the width and use slider for better UX
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        sample_index = st.slider(
+                            f'Sample index (0-{len(cur_step_filtered_content_dict["response"]) - 1}):',
+                            min_value=0,
+                            max_value=len(cur_step_filtered_content_dict['response']) - 1,
+                            value=0,
+                            key="sample_index_slider"
+                        )
+                    with col2:
+                        st.write("")  # Spacer for alignment
 
                 # 单样本展示 response - ref_response 的回复
                 # Column selection bar
@@ -897,7 +1107,7 @@ ground_truth.notna()
                 selected_columns = st.multiselect(
                     'Select columns to display:',
                     options=present_columns,
-                    default=present_columns,
+                    default=[p for p in present_columns if p not in ['reward_gap']],
                     format_func=lambda x: available_columns[x]['label']
                 )
 
