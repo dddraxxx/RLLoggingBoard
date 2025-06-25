@@ -1,0 +1,36 @@
+{
+    "lambda_examples": [
+        {
+            "name": "Average reward",
+            "expression": "lambda step_data: [sum(step_data['reward']) / len(step_data['reward'])]"
+        },
+        {
+            "name": "Max reward",
+            "expression": "lambda step_data: [max(step_data['reward'])]"
+        },
+        {
+            "name": "Reward variance",
+            "expression": "lambda step_data: [np.var(step_data['reward'])]"
+        },
+        {
+            "name": "Reward distribution",
+            "expression": "lambda step_data: step_data['reward']"
+        },
+        {
+            "name": "Response length avg",
+            "expression": "lambda step_data: [np.mean(step_data['response_tokens_len'])] if step_data['response_tokens_len'] else [0]"
+        },
+        {
+            "name": "Reward improvement",
+            "expression": "lambda step_data: [r - ref_r for r, ref_r in zip(step_data['reward'], step_data['ref_reward'])] if step_data['ref_reward'] else step_data['reward']"
+        },
+        {
+            "name": "High reward count",
+            "expression": "lambda step_data: [sum(1 for r in step_data['reward'] if r > 0.5)]"
+        },
+        {
+            "name": "KL * Reward",
+            "expression": "lambda step_data: [kl * r for kl, r in zip(step_data['avg_kl'], step_data['reward'])] if step_data['avg_kl'] else [0]"
+        }
+    ]
+}
