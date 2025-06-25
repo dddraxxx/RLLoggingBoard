@@ -5,6 +5,7 @@
     "response.str.contains('\"image_zoom_in_tool\"', case=False, na=False)",
     "response.str.contains('\"image_draw_line_tool\"', case=False, na=False)",
     "reward > 0.5",
+    "reward < 0.5",
     "response.str.len() > 100"
   ]
 }

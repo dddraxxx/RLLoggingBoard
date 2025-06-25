@@ -90,21 +90,23 @@ def load_common_filters():
 
 def load_lambda_examples():
     """
-    Load lambda function examples from configuration file.
+    Load lambda function examples from Python configuration file.
 
     Returns:
         list: List of tuples (name, expression), or default examples if file not found
     """
     try:
-        # Look for lambda_examples.json in the same directory as this script
+        # Look for lambda_examples.py in the same directory as this script
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        examples_path = os.path.join(script_dir, 'lambda_examples.json')
+        examples_path = os.path.join(script_dir, 'lambda_examples.py')
 
         if os.path.exists(examples_path):
-            with open(examples_path, 'r', encoding='utf-8') as f:
-                data = json.loads(f.read())
-                examples_data = data.get('lambda_examples', [])
-                return [(item['name'], item['expression']) for item in examples_data]
+            # Import the examples from the Python file
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("lambda_examples", examples_path)
+            examples_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(examples_module)
+            return examples_module.LAMBDA_EXAMPLES
         else:
             # Return default examples if file doesn't exist
             return [
@@ -124,24 +126,43 @@ def load_lambda_examples():
 
 def save_lambda_examples(examples):
     """
-    Save lambda function examples to configuration file.
+    Save lambda function examples to Python configuration file.
 
     Args:
         examples (list): List of tuples (name, expression)
     """
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        examples_path = os.path.join(script_dir, 'lambda_examples.json')
+        examples_path = os.path.join(script_dir, 'lambda_examples.py')
 
-        data = {
-            'lambda_examples': [
-                {'name': name, 'expression': expression}
-                for name, expression in examples
-            ]
-        }
+        # Create the Python file content
+        content = '''"""
+Lambda function examples for custom metrics in RL Logging Board.
+
+Each example should be a tuple of (name, expression).
+For multi-line def functions, use triple quotes and name your function 'custom_function'.
+"""
+
+import numpy as np
+import pandas as pd
+
+LAMBDA_EXAMPLES = [
+'''
+
+        for name, expression in examples:
+            # Properly escape the expression for Python syntax
+            if '\n' in expression:
+                # Multi-line expression - use triple quotes
+                content += f'    ("{name}", """{expression}"""),\n\n'
+            else:
+                # Single line expression - use regular quotes and escape
+                escaped_expr = expression.replace('\\', '\\\\').replace('"', '\\"')
+                content += f'    ("{name}", "{escaped_expr}"),\n\n'
+
+        content += ']\n'
 
         with open(examples_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(data, indent=4, ensure_ascii=False))
+            f.write(content)
         return True
     except Exception as e:
         st.error(f"Error saving lambda examples: {e}")
@@ -870,229 +891,237 @@ def main_page():
                 if 'custom_functions' not in st.session_state:
                     st.session_state['custom_functions'] = []
 
-                # Initialize session state for form inputs if not exists
-                if 'func_expression_value' not in st.session_state:
-                    st.session_state.func_expression_value = "lambda step_data: [r for r in step_data['reward']]"
-                if 'func_name_value' not in st.session_state:
-                    st.session_state.func_name_value = "custom_metric"
+                # Calculate and plot custom metrics
+                try:
+                    steps = []
+                    all_y_data = []
+                    all_names = []
+                    all_colors = []
 
-                # Add function interface
-                with st.expander("➕ Add Custom Function", expanded=True):
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    # Prepare data for each function
+                    for func_info in st.session_state['custom_functions']:
+                        func_steps = []
+                        func_results = []  # Store raw results first
 
-                    with col1:
-                        func_expression = st.text_input(
-                            "Lambda Function:",
-                            value=st.session_state.func_expression_value,
-                            help="Lambda function that takes step_data dict and returns a value or list of values",
-                            placeholder="e.g., lambda step_data: [r for r in step_data['reward']]",
-                            key="func_expression_input"
-                        )
-
-                    with col2:
-                        func_name = st.text_input(
-                            "Function Name:",
-                            value=st.session_state.func_name_value,
-                            help="Name for this custom metric",
-                            key="func_name_input"
-                        )
-
-                    with col3:
-                        func_color = st.color_picker(
-                            "Color:",
-                            value="#FF6B6B",
-                            help="Color for the line plot"
-                        )
-                        # Convert hex to RGB
-                        hex_color = func_color.lstrip('#')
-                        rgb_color = ','.join(str(int(hex_color[i:i+2], 16)) for i in (0, 2, 4))
-
-                    with col4:
-                        st.write("")  # Spacer
-                        if st.button("Add Function", use_container_width=True):
-                            # Validate the lambda function
+                        # Collect all results for this function
+                        for step, value_dict in st.session_state['logging_data'].items():
                             try:
-                                # Test with sample data
-                                sample_step_data = {
-                                    'reward': [0.5, 0.3, 0.8],
-                                    'ref_reward': [0.4, 0.2, 0.7],
-                                    'response_tokens_len': [10, 15, 20],
-                                    'avg_kl': [0.1, 0.2, 0.15],
-                                    'avg_log_ratio': [0.05, 0.1, 0.08]
-                                }
-                                test_func = eval(func_expression)
-                                test_result = test_func(sample_step_data)
-
-                                                                # Add to session state
-                                new_func = {
-                                    'name': func_name,
-                                    'expression': func_expression,
-                                    'color': rgb_color,
-                                    'function': test_func
-                                }
-                                st.session_state['custom_functions'].append(new_func)
-
-                                # Reset form inputs for next function
-                                st.session_state.func_expression_value = "lambda step_data: [r for r in step_data['reward']]"
-                                st.session_state.func_name_value = "custom_metric"
-
-                                st.success(f"✅ Added function '{func_name}' successfully!")
-                                st.rerun()
-
-                            except Exception as e:
-                                st.error(f"❌ Invalid lambda function: {str(e)}")
-
-                # Display current functions
-                if st.session_state['custom_functions']:
-                    st.markdown("**📊 Current Custom Functions:**")
-
-                    # Function management
-                    func_cols = st.columns([4, 2, 1])
-                    with func_cols[0]:
-                        st.markdown("**Functions:**")
-                    with func_cols[1]:
-                        st.markdown("**Actions:**")
-                    with func_cols[2]:
-                        if st.button("Clear All", type="secondary", use_container_width=True):
-                            st.session_state['custom_functions'] = []
-                            st.rerun()
-
-                    for i, func_info in enumerate(st.session_state['custom_functions']):
-                        func_display_cols = st.columns([4, 1, 1])
-
-                        with func_display_cols[0]:
-                            st.code(f"{func_info['name']}: {func_info['expression']}", language="python")
-
-                        with func_display_cols[1]:
-                            if st.button(f"Remove", key=f"remove_{i}", use_container_width=True):
-                                st.session_state['custom_functions'].pop(i)
-                                st.rerun()
-
-                        with func_display_cols[2]:
-                            # Show color indicator
-                            st.markdown(f'<div style="background-color: rgb({func_info["color"]}); height: 20px; border-radius: 3px;"></div>',
-                                      unsafe_allow_html=True)
-
-                    # Calculate and plot custom metrics
-                    try:
-                        steps = []
-                        all_y_data = []
-                        all_names = []
-                        all_colors = []
-
-                        # Prepare data for each function
-                        for func_info in st.session_state['custom_functions']:
-                            func_steps = []
-                            func_y_data = []
-
-                            for step, value_dict in st.session_state['logging_data'].items():
-                                try:
+                                # Handle both lambda and def functions during execution
+                                if func_info.get('is_def', False):
+                                    # Re-execute def function for each step
+                                    namespace = {'np': np, 'pd': pd}
+                                    exec(func_info['expression'], namespace)
+                                    func_key = [k for k in namespace if k.endswith('function')][0]
+                                    result = namespace[func_key](value_dict)
+                                else:
                                     result = func_info['function'](value_dict)
 
-                                    # Handle different return types
+                                func_steps.append(step)
+                                func_results.append(result)
+
+                            except Exception as e:
+                                # Skip this step if function fails
+                                continue
+
+                        if func_results:  # Only process if we have data
+                            if not steps:  # First function sets the steps
+                                steps = func_steps
+
+                            # Check if we have dict returns (grouped data)
+                            first_result = func_results[0]
+                            if isinstance(first_result, dict):
+                                # Handle grouped data - create separate lines for each group
+                                group_keys = first_result.keys()
+
+                                for group_key in group_keys:
+                                    group_y_data = []
+                                    for result in func_results:
+                                        if isinstance(result, dict) and group_key in result:
+                                            group_y_data.append([result[group_key]])
+                                        else:
+                                            group_y_data.append([0])  # Default value if key missing
+
+                                    all_y_data.append(group_y_data)
+                                    all_names.append(f"{func_info['name']} - {group_key}")
+                                    # Generate random color for each group
+                                    random_color = f"{np.random.randint(50, 255)},{np.random.randint(50, 255)},{np.random.randint(50, 255)}"
+                                    all_colors.append(random_color)
+
+                            else:
+                                # Handle non-grouped data
+                                func_y_data = []
+                                for result in func_results:
                                     if isinstance(result, (list, tuple, np.ndarray)):
-                                        if len(result) > 0:  # Only add if we have data
-                                            func_steps.append(step)
+                                        if len(result) > 0:
                                             func_y_data.append(list(result))
+                                        else:
+                                            func_y_data.append([0])
                                     else:
-                                        # Single value - wrap in list for consistency with plot_filled_line
-                                        func_steps.append(step)
+                                        # Single value
                                         func_y_data.append([result])
 
-                                except Exception as e:
-                                    # Skip this step if function fails
-                                    continue
-
-                            if func_y_data:  # Only add if we have data
-                                if not steps:  # First function sets the steps
-                                    steps = func_steps
                                 all_y_data.append(func_y_data)
                                 all_names.append(func_info['name'])
-                                all_colors.append(func_info['color'])
+                                # Generate random color for single function
+                                random_color = f"{np.random.randint(50, 255)},{np.random.randint(50, 255)},{np.random.randint(50, 255)}"
+                                all_colors.append(random_color)
 
-                        # Plot if we have data
-                        if all_y_data and steps:
-                            custom_fig = plot_filled_line(
-                                x=steps,
-                                y_list_list=all_y_data,
-                                data_names=all_names,
-                                colors=all_colors,
-                                title='🎨 Custom Metrics (Step level)',
-                                var_scaling=st.session_state['var_scaling']
-                            )
-                            st.plotly_chart(custom_fig, theme="streamlit", use_container_width=True)
-                        else:
-                            st.info("No data to plot. Make sure your lambda functions return valid data.")
+                    # Plot if we have data
+                    if all_y_data and steps:
+                        custom_fig = plot_filled_line(
+                            x=steps,
+                            y_list_list=all_y_data,
+                            data_names=all_names,
+                            colors=all_colors,
+                            title='🎨 Custom Metrics (Step level)',
+                            var_scaling=st.session_state['var_scaling']
+                        )
+                        st.plotly_chart(custom_fig, theme="streamlit", use_container_width=True)
+                    else:
+                        st.info("📊 No custom functions added yet. Add functions from examples below to see plots.")
 
-                    except Exception as e:
-                        st.error(f"Error plotting custom metrics: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error plotting custom metrics: {str(e)}")
 
-                                # Help section with editable examples
-                with st.expander("📖 Lambda Function Examples", expanded=False):
+                # Function examples section with multi-line support
+                with st.expander("📖 Function Examples & Quick Add", expanded=True):
                     # Load examples from file
                     examples = load_lambda_examples()
 
-                    st.markdown("**Manage your lambda function examples:**")
+                    # Header with reset button
+                    header_col1, header_col2 = st.columns([3, 1])
+                    with header_col1:
+                        st.markdown("**🚀 Ready-to-use Examples:**")
+
+                    with header_col2:
+                        if st.button("🔄 Reset All",
+                                   help="Reset all examples to original file state",
+                                   use_container_width=True,
+                                   type="secondary"):
+                            st.session_state.editing_examples = examples.copy()
+                            st.success("🔄 All examples reset to original state!")
+                            st.rerun()
 
                     # Initialize session state for editing
                     if 'editing_examples' not in st.session_state:
                         st.session_state.editing_examples = examples.copy()
 
-                    # Add new example
-                    st.markdown("**➕ Add New Example:**")
-                    col1, col2, col3 = st.columns([3, 3, 1])
-                    with col1:
-                        new_name = st.text_input("New example name:", key="new_example_name")
-                    with col2:
-                        new_expr = st.text_input("New lambda expression:", key="new_example_expr")
-                    with col3:
-                        st.write("")  # spacer
-                        if st.button("➕ Add", use_container_width=True):
-                            if new_name and new_expr:
-                                st.session_state.editing_examples.append((new_name, new_expr))
-                                st.rerun()
-
-                    st.divider()
-                    st.markdown("**📝 Edit Existing Examples:**")
-
-                    # Edit existing examples
+                                        # Display examples in a more compact way
                     for i, (name, expr) in enumerate(st.session_state.editing_examples):
-                        col1, col2, col3, col4 = st.columns([2.5, 2.5, 1, 1])
-                        with col1:
-                            new_name = st.text_input(f"Name {i+1}:", value=name, key=f"edit_name_{i}")
-                        with col2:
-                            new_expr = st.text_input(f"Expression {i+1}:", value=expr, key=f"edit_expr_{i}")
-                        with col3:
-                            st.write("")  # spacer
-                            if st.button("✅ Use", key=f"use_{i}", help="Use this example", use_container_width=True):
-                                # Update session state values directly - no rerun needed!
-                                st.session_state.func_expression_value = new_expr
-                                st.session_state.func_name_value = new_name.lower().replace(' ', '_')
-                        with col4:
-                            st.write("")  # spacer
-                            if st.button("🗑️", key=f"delete_{i}", help="Delete this example", use_container_width=True):
-                                st.session_state.editing_examples.pop(i)
-                                st.rerun()
+                        with st.container():
+                            # Always editable name and expression
+                            col1, col2 = st.columns([1, 3])
+                            with col1:
+                                edited_name = st.text_input(
+                                    "Name:",
+                                    value=name,
+                                    key=f"edit_name_{i}",
+                                    label_visibility="collapsed"
+                                )
+                            with col2:
+                                edited_expr = st.text_area(
+                                    "Expression:",
+                                    value=expr,
+                                    height=100,
+                                    key=f"edit_expr_{i}",
+                                    help="Supports both lambda expressions and multi-line def functions",
+                                    label_visibility="collapsed"
+                                )
 
-                        # Update the example if changed
-                        if new_name != name or new_expr != expr:
-                            st.session_state.editing_examples[i] = (new_name, new_expr)
+                            # Button row
+                            col1, col2, col3 = st.columns([1, 1, 1])
 
-                    st.divider()
-                    # Save button
-                    col1, col2 = st.columns([1, 1])
-                    with col1:
-                        if st.button("💾 Save Examples", use_container_width=True):
-                            if save_lambda_examples(st.session_state.editing_examples):
-                                st.success("✅ Examples saved successfully!")
-                                st.rerun()
-                    with col2:
-                        if st.button("🔄 Reset to File", use_container_width=True):
-                            st.session_state.editing_examples = load_lambda_examples().copy()
-                            st.rerun()
+                            with col1:
+                                # Check if this function is already active
+                                existing_names = [f['name'] for f in st.session_state.get('custom_functions', [])]
+                                is_active = name in existing_names
+                                if is_active:
+                                    button_type = "primary"
+                                    button_text = "🗑️ Remove"
+                                else:
+                                    button_type = "secondary"
+                                    button_text = "➕ Add"
+
+                                if st.button(button_text, key=f"add_{i}", use_container_width=True, type=button_type):
+                                    if is_active:
+                                        # Remove function if already active
+                                        st.session_state['custom_functions'] = [
+                                            f for f in st.session_state['custom_functions']
+                                            if f['name'] != name
+                                        ]
+                                        st.success(f"🗑️ Removed '{name}' from chart!")
+                                        st.rerun()
+                                    else:
+                                        # Use the edited expression for adding
+                                        try:
+                                            # Test with sample data
+                                            sample_step_data = {
+                                                'reward': [0.5, 0.3, 0.8],
+                                                'ref_reward': [0.4, 0.2, 0.7],
+                                                'response_tokens_len': [10, 15, 20],
+                                                'avg_kl': [0.1, 0.2, 0.15],
+                                                'avg_log_ratio': [0.05, 0.1, 0.08],
+                                                'response': ['good response', 'good response', 'bad response']
+                                            }
+
+                                            # Handle both lambda and def functions
+                                            if edited_expr.strip().startswith('def '):
+                                                # Multi-line def function
+                                                namespace = {'np': np, 'pd': pd}
+                                                exec(edited_expr, namespace)
+                                                func_key = [k for k in namespace if k.endswith('function')][0]
+                                                test_func = namespace[func_key]
+                                                is_def = True
+                                            else:
+                                                # Lambda function
+                                                test_func = eval(edited_expr, {'np': np, 'pd': pd})
+                                                is_def = False
+
+                                            test_result = test_func(sample_step_data)
+
+                                            # Add to session state with unique name if exists
+                                            func_name = edited_name
+                                            existing_names = [f['name'] for f in st.session_state['custom_functions']]
+                                            counter = 1
+                                            while func_name in existing_names:
+                                                func_name = f"{edited_name}_{counter}"
+                                                counter += 1
+
+                                            new_func = {
+                                                'name': func_name,
+                                                'expression': edited_expr,
+                                                'function': test_func,
+                                                'is_def': is_def
+                                            }
+                                            st.session_state['custom_functions'].append(new_func)
+                                            st.success(f"✅ Added '{func_name}' to chart!")
+                                            st.rerun()
+
+                                        except Exception as e:
+                                            st.error(f"❌ Invalid function: {str(e)}")
+
+                            with col2:
+                                # Save button to update the example
+                                if st.button("💾 Save", key=f"save_{i}", use_container_width=True):
+                                    st.session_state.editing_examples[i] = (edited_name, edited_expr)
+                                    st.success(f"💾 Saved changes to '{edited_name}'!")
+                                    st.rerun()
+
+                            with col3:
+                                # Delete button to remove this example
+                                if st.button("🗑️ Delete", key=f"delete_{i}", use_container_width=True):
+                                    st.session_state.editing_examples.pop(i)
+                                    st.success(f"🗑️ Deleted example '{name}'!")
+                                    st.rerun()
+
 
         if st.session_state['show_response']:
             st.markdown('⚡️ **Each Step Response**')
+
+            # Check if step indices are initialized
+            if 'min_step_index' not in st.session_state or 'max_step_index' not in st.session_state:
+                st.warning("Please load log data first using the 'Load & View' button in the sidebar.")
+                return
 
             if st.session_state['min_step_index'] == st.session_state['max_step_index']:
                 step_index = st.session_state['min_step_index']

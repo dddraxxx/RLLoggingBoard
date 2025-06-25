@@ -10,37 +10,16 @@ import pandas as pd
 import inspect
 
 
-def datasource_count(step_data):
+def datasource_count_function(step_data):
     datasource = {}
-    for key, value in step_data.items():
-        if key in ['data_source']:
-            datasource[value] = datasource.get(value, 0) + 1
+    if 'data_source' in step_data:
+        np_arr = np.array(step_data['data_source'])
+        datasource = {k: (np_arr == k).sum() for k in np.unique(np_arr)}
     return datasource
 
-LAMBDA_EXAMPLES = [
-    ("KL * Reward", "lambda step_data: [kl * r for kl, r in zip(step_data['avg_kl'], step_data['reward'])] if step_data['avg_kl'] else [0]"),
-
-    ("Response length groups", """def custom_function(step_data):
-    if not step_data.get('response'):
-        return {'short': 0, 'medium': 0, 'long': 0}
-    lengths = [len(r) for r in step_data['response']]
-    return {
-        'short': sum(1 for l in lengths if l < 50),
-        'medium': sum(1 for l in lengths if 50 <= l < 200),
-        'long': sum(1 for l in lengths if l >= 200)
-    }"""),
-
-    ("Reward categories", """def custom_function(step_data):
-    rewards = step_data.get('reward', [])
-    return {
-        'high': sum(1 for r in rewards if r > 0.7),
-        'medium': sum(1 for r in rewards if 0.3 <= r <= 0.7),
-        'low': sum(1 for r in rewards if r < 0.3)
-    }"""),
-
-    ("Tool usage analysis", """def custom_function(step_data):
+def tool_calls_analysis_function(step_data):
     responses = step_data.get('response', [])
-    tool_counts = {'tool_call': 0, 'regular': 0}
+    tool_counts = {'<tool_call>': 0, 'regular': 0}
 
     for response in responses:
         if 'tool_call' in response.lower():
@@ -48,7 +27,33 @@ LAMBDA_EXAMPLES = [
         else:
             tool_counts['regular'] += 1
 
-    return tool_counts"""),
+    return tool_counts
 
-    ("Datasource count", inspect.getsource(datasource_count)),
+def tool_call_to_source_count_function(step_data):
+    from collections import defaultdict
+    responses = step_data.get('response', [])
+    datasource = step_data.get('data_source', [])
+    tool_counts = defaultdict(int)
+    for response, datasource in zip(responses, datasource):
+        if 'tool_call' in response.lower():
+            tool_counts[datasource] += 1
+    return tool_counts
+
+def tool_call_to_source_percent_function(step_data):
+    from collections import defaultdict
+    responses = step_data.get('response', [])
+    datasource = step_data.get('data_source', [])
+    tool_counts = defaultdict(int)
+    source_counts = defaultdict(int)
+    for response, datasource in zip(responses, datasource):
+        if 'tool_call' in response.lower():
+            tool_counts[datasource] += 1
+        source_counts[datasource] += 1
+    return {k: tool_counts[k]/(source_counts[k]+1e-6) for k in tool_counts}
+
+LAMBDA_EXAMPLES = [
+    ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
+    ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
+    ("Datasource count", inspect.getsource(datasource_count_function)),
+    ("Tool usage analysis", inspect.getsource(tool_calls_analysis_function)),
 ]
