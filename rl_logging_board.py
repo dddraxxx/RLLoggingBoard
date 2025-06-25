@@ -503,7 +503,6 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
     full_current_path = os.path.join(base_root_path, current_log)
 
     st.sidebar.success(f"`{full_current_path}`")
-    st.sidebar.markdown("---")
 
     return all_log_paths[selected_option_index]
 
@@ -545,17 +544,17 @@ Base Log Dir
     # Use the improved log selector
     log_name = create_log_selector(all_log_path_in_logdir, base_root_path)
 
+    load_btn = st.sidebar.button(
+        "Load & View",
+        use_container_width=True
+    )
+
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
         help='当step batch size 过大时可能会造成平台卡顿，可设置阈值来下采样每个step的数据。',
         value=256,
         max_value=10240,
         min_value=1
-    )
-
-    load_btn = st.sidebar.button(
-        "Load & View",
-        use_container_width=True
     )
 
     step_freq = st.sidebar.number_input(
@@ -1070,13 +1069,50 @@ ground_truth.notna()
                     # Limit the width and use slider for better UX
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        sample_index = st.slider(
-                            f'Sample index (0-{len(cur_step_filtered_content_dict["response"]) - 1}):',
-                            min_value=0,
-                            max_value=len(cur_step_filtered_content_dict['response']) - 1,
-                            value=0,
-                            key="sample_index_slider"
-                        )
+                        # Get filtered indices if filter is enabled and has results
+                        if filter_enabled and filter_expression.strip() and not filter_error and len(filtered_df) > 0:
+                            # Use slider with snapping to nearest filtered index
+                            filtered_indices = sorted(filtered_df.index.tolist())
+                            min_idx, max_idx = min(filtered_indices), max(filtered_indices)
+
+                            # Initialize session state for snapped slider if not exists
+                            if 'snapped_sample_index' not in st.session_state:
+                                st.session_state.snapped_sample_index = filtered_indices[0]
+
+                            # Create slider with full range of filtered indices
+                            raw_slider_value = st.slider(
+                                f'Sample index (snaps to filtered samples: {len(filtered_indices)} available):',
+                                min_value=min_idx,
+                                max_value=max_idx,
+                                value=st.session_state.snapped_sample_index,
+                                key="filtered_sample_slider"
+                            )
+
+                            # Find nearest filtered index
+                            def find_nearest_filtered_index(value, filtered_list):
+                                return min(filtered_list, key=lambda x: abs(x - value))
+
+                            snapped_index = find_nearest_filtered_index(raw_slider_value, filtered_indices)
+
+                            # Update session state if snapped to different value
+                            if snapped_index != st.session_state.snapped_sample_index:
+                                st.session_state.snapped_sample_index = snapped_index
+                                st.rerun()
+
+                            sample_index = snapped_index
+
+                            # Show which sample is selected if snapped
+                            if raw_slider_value != snapped_index:
+                                st.caption(f"Snapped to nearest filtered sample: {snapped_index}")
+                        else:
+                            # Use original slider behavior for unfiltered data
+                            sample_index = st.slider(
+                                f'Sample index (0-{len(cur_step_filtered_content_dict["response"]) - 1}):',
+                                min_value=0,
+                                max_value=len(cur_step_filtered_content_dict['response']) - 1,
+                                value=0,
+                                key="sample_index_slider"
+                            )
                     with col2:
                         st.write("")  # Spacer for alignment
 

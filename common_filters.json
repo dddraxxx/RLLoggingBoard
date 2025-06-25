@@ -1,9 +1,9 @@
 {
   "common_filters": [
-    "response.str.contains('tool_call', case=False, na=False)",
-    "response.str.contains('mark_point', case=False, na=False)",
-    "response.str.contains('zoom_in', case=False, na=False)",
-    "response.str.contains('draw_line', case=False, na=False)",
+    "response.str.contains('<tool_call>', case=False, na=False)",
+    "response.str.contains('\"image_mark_points_tool\"', case=False, na=False)",
+    "response.str.contains('\"image_zoom_in_tool\"', case=False, na=False)",
+    "response.str.contains('\"image_draw_line_tool\"', case=False, na=False)",
     "reward > 0.5",
     "response.str.len() > 100"
   ]
