@@ -303,7 +303,7 @@ def load_log_file(
                     if data['step'] < start_step:
                         continue
                     if end_step != -1 and data['step'] > end_step:
-                        continue
+                        break
 
                     # Apply step frequency filtering
                     if data['step'] % step_freq != 0:
@@ -786,7 +786,7 @@ def main_page():
 
             with right_col:
                 custom_tab = st.container()
-                st.markdown("### 🎨 Custom Metrics")
+                st.markdown("### Custom Metrics")
                 custom_tab = st.container()
 
             with step_reward_tab:
@@ -884,9 +884,6 @@ def main_page():
                 st.plotly_chart(resp_len_fig, theme="streamlit", use_container_width=True)
 
             with custom_tab:
-                st.markdown("**🔧 Custom Chart with Lambda Functions**")
-                st.markdown("Define lambda functions to extract custom y values from each step's data.")
-
                 # Initialize session state for custom functions
                 if 'custom_functions' not in st.session_state:
                     st.session_state['custom_functions'] = []
@@ -1268,7 +1265,9 @@ def main_page():
                 'ref_valid_reward',
                 'reward_gap',
                 'valid_reward_gap',
-                'image_path'
+                'image_path',
+                'data_source',
+                'ability',
             ]
             candidate_keys = [k for k in showed_keys if cur_step_filtered_content_dict[k]]
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
@@ -1480,7 +1479,11 @@ ground_truth.notna()
                     'response': {'label': 'Response', 'color': '#3DD56D', 'width': 3},
                     'ref_response': {'label': 'Ref Response', 'color': '#60B4FF', 'width': 3},
                     'reward_gap': {'label': 'Reward Gap', 'color': '#FFA500', 'width': 2},
-                    'image_path': {'label': 'Image', 'color': '#FF69B4', 'width': 4}
+                    'image_path': {'label': 'Image', 'color': '#FF69B4', 'width': 4},
+                    'ground_truth': {'label': 'Ground Truth', 'color': '#000000', 'width': 1},
+                    'reward': {'label': 'Reward', 'color': '#000000', 'width': 1},
+                    # 'data_source': {'label': 'Data Source', 'color': '#000000', 'width': 1},
+                    # 'ability': {'label': 'Ability', 'color': '#000000', 'width': 1}
                 }
 
                 # Filter available columns based on what data is present
@@ -1547,14 +1550,6 @@ ground_truth.notna()
                                 else:
                                     st.info('No `ref_response` found in log line data.')
 
-                            elif col_name == 'reward_gap':
-                                st.markdown(':orange[Reward Gap]')
-                                reward_gap = round(cur_step_filtered_content_dict["reward_gap"][sample_index], 4) if cur_step_filtered_content_dict["reward_gap"] else 0.
-                                st.metric(
-                                    ' ',
-                                    value=reward_gap
-                                )
-
                             elif col_name == 'image_path':
                                 st.markdown('<font color="#FF69B4">Image</font>', unsafe_allow_html=True)
                                 if (
@@ -1568,6 +1563,29 @@ ground_truth.notna()
                                     display_image_with_actions(image_path, cur_step_filtered_content_dict["response"][sample_index])
                                 else:
                                     st.info('No `image_path` found in log line data.')
+
+                            else:
+                                # Generic handling for other columns (ground_truth, data_source, ability, etc.)
+                                st.markdown(f'<font color="{col_info["color"]}">{col_info["label"]}</font>', unsafe_allow_html=True)
+                                if (
+                                        col_name in cur_step_filtered_content_dict
+                                        and
+                                        cur_step_filtered_content_dict[col_name]
+                                        and
+                                        sample_index < len(cur_step_filtered_content_dict[col_name])
+                                ):
+                                    content = str(cur_step_filtered_content_dict[col_name][sample_index])
+                                    # Apply text processing for long text fields like ground_truth
+                                    if col_name in ['ground_truth']:
+                                        content = content.replace('\n', '  \n').replace('~', '～')
+                                        content = process_content_for_display(content)
+
+                                    st.markdown(
+                                        f'<font color="{col_info["color"]}">{content}</font>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.info(f'No `{col_name}` found in log line data.')
 
                 # 展示更详细的 token-level 的信息
                 if 'token_rewards' in cur_step_filtered_content_dict and cur_step_filtered_content_dict['token_rewards']:

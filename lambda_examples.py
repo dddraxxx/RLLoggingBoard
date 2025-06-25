@@ -51,7 +51,26 @@ def tool_call_to_source_percent_function(step_data):
         source_counts[datasource] += 1
     return {k: tool_counts[k]/(source_counts[k]+1e-6) for k in tool_counts}
 
+def tool_use_percent_function(step_data):
+    tools = ['image_mark_points', 'image_zoom_in', 'image_draw_line']
+    responses = step_data.get('response', [])
+    from collections import defaultdict
+    import re
+    # inside <tool_call>...</tool_call>
+    tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    tool_call_content_list = []
+    tool_counts = defaultdict(int)
+    for response in responses:
+        tool_call_content = tool_call_content_re.findall(response)
+        if tool_call_content:
+            for tool_call in tool_call_content:
+                for tool in tools:
+                    if tool in tool_call:
+                        tool_counts[tool] += 1
+    return tool_counts
+
 LAMBDA_EXAMPLES = [
+    ("Tool use percent", inspect.getsource(tool_use_percent_function)),
     ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
     ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
     ("Datasource count", inspect.getsource(datasource_count_function)),
