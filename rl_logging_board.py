@@ -832,69 +832,94 @@ def main_page():
                 if not cur_step_filtered_content_dict['ref_reward']:
                     cur_step_filtered_content_dict['ref_reward'] = [0] * len(cur_step_filtered_content_dict['reward'])
 
-                c1, c2, c3 = st.columns([6, 6, 6])
+                # Chart selection controls
+                chart_selection_cols = st.columns([2, 2, 2, 6])
+                with chart_selection_cols[0]:
+                    show_reward_dist = st.checkbox('Reward Distribution', value=True)
+                with chart_selection_cols[1]:
+                    show_reward_gap = st.checkbox('Reward Gap', value=True)
+                with chart_selection_cols[2]:
+                    show_reward_hist = st.checkbox('Reward Histogram', value=True)
 
-                with c1:                                                    # reward 分布
-                    reward_distribution_dict = {
-                        'sample_index': [],
-                        'reward': [],
-                        'tag': []
-                    }
-                    for sample_index, (reward, ref_reward) in enumerate(zip(cur_step_filtered_content_dict['reward'], cur_step_filtered_content_dict['ref_reward'])):
-                        reward_distribution_dict['sample_index'].append(sample_index)
-                        reward_distribution_dict['reward'].append(reward)
-                        reward_distribution_dict['tag'].append('Reward')
-                        reward_distribution_dict['sample_index'].append(sample_index)
-                        reward_distribution_dict['reward'].append(ref_reward)
-                        reward_distribution_dict['tag'].append('Ref Reward')
+                # Create columns only for selected charts
+                selected_charts = []
+                if show_reward_dist:
+                    selected_charts.append('reward_dist')
+                if show_reward_gap:
+                    selected_charts.append('reward_gap')
+                if show_reward_hist:
+                    selected_charts.append('reward_hist')
 
-                    reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
-                    fig = px.bar(
-                        reward_distribution_df,
-                        x="sample_index",
-                        y="reward",
-                        color="tag",
-                        barmode='group',
-                        color_discrete_sequence=px.colors.diverging.Portland,
-                        title="Reward in current batch samples"
-                    )
-                    st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+                if selected_charts:
+                    chart_cols = st.columns([6] * len(selected_charts))
+                    chart_index = 0
 
-                with c2:                                                    # reward gap 分布
-                    reward_distribution_dict = {
-                        'sample_index': [i for i in range(len(cur_step_filtered_content_dict['reward_gap']))],
-                        'reward_gap': cur_step_filtered_content_dict['reward_gap']
-                    }
-                    reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
-                    fig = px.bar(
-                        reward_distribution_df,
-                        x="sample_index",
-                        y="reward_gap",
-                        color="reward_gap",
-                        color_discrete_sequence=['red'],
-                        title="Reward Gap (r - ref_r) in current batch"
-                    )
-                    st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+                    if show_reward_dist:                                    # reward 分布
+                        with chart_cols[chart_index]:
+                            reward_distribution_dict = {
+                                'sample_index': [],
+                                'reward': [],
+                                'tag': []
+                            }
+                            for sample_index, (reward, ref_reward) in enumerate(zip(cur_step_filtered_content_dict['reward'], cur_step_filtered_content_dict['ref_reward'])):
+                                reward_distribution_dict['sample_index'].append(sample_index)
+                                reward_distribution_dict['reward'].append(reward)
+                                reward_distribution_dict['tag'].append('Reward')
+                                reward_distribution_dict['sample_index'].append(sample_index)
+                                reward_distribution_dict['reward'].append(ref_reward)
+                                reward_distribution_dict['tag'].append('Ref Reward')
 
-                with c3:                                                    # reward 方差分布
-                    if cur_step_filtered_content_dict['ref_reward']:
-                        hist_data = [
-                            cur_step_filtered_content_dict['ref_reward'],
-                            cur_step_filtered_content_dict['reward'],
-                        ]
-                        group_labels = ['Ref Rewards', 'Rewards']
-                    else:
-                        hist_data = [cur_step_filtered_content_dict['reward']]
-                        group_labels = ['Rewards']
+                            reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
+                            fig = px.bar(
+                                reward_distribution_df,
+                                x="sample_index",
+                                y="reward",
+                                color="tag",
+                                barmode='group',
+                                color_discrete_sequence=px.colors.diverging.Portland,
+                                title="Reward in current batch samples"
+                            )
+                            st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+                        chart_index += 1
 
-                    fig = ff.create_distplot(
-                        hist_data,
-                        group_labels,
-                        bin_size=[.02, .02],
-                        curve_type='normal'
-                    )
-                    fig.update_layout(title="Reward Distribution in current batch")
-                    st.plotly_chart(fig, use_container_width=True)
+                    if show_reward_gap:                                     # reward gap 分布
+                        with chart_cols[chart_index]:
+                            reward_distribution_dict = {
+                                'sample_index': [i for i in range(len(cur_step_filtered_content_dict['reward_gap']))],
+                                'reward_gap': cur_step_filtered_content_dict['reward_gap']
+                            }
+                            reward_distribution_df = pd.DataFrame.from_dict(reward_distribution_dict)
+                            fig = px.bar(
+                                reward_distribution_df,
+                                x="sample_index",
+                                y="reward_gap",
+                                color="reward_gap",
+                                color_discrete_sequence=['red'],
+                                title="Reward Gap (r - ref_r) in current batch"
+                            )
+                            st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+                        chart_index += 1
+
+                    if show_reward_hist:                                    # reward 方差分布
+                        with chart_cols[chart_index]:
+                            if cur_step_filtered_content_dict['ref_reward']:
+                                hist_data = [
+                                    cur_step_filtered_content_dict['ref_reward'],
+                                    cur_step_filtered_content_dict['reward'],
+                                ]
+                                group_labels = ['Ref Rewards', 'Rewards']
+                            else:
+                                hist_data = [cur_step_filtered_content_dict['reward']]
+                                group_labels = ['Rewards']
+
+                            fig = ff.create_distplot(
+                                hist_data,
+                                group_labels,
+                                bin_size=[.02, .02],
+                                curve_type='normal'
+                            )
+                            fig.update_layout(title="Reward Distribution in current batch")
+                            st.plotly_chart(fig, use_container_width=True)
 
             showed_keys = [
                 'prompt',
