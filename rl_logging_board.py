@@ -1095,6 +1095,9 @@ def main_page():
                                             st.rerun()
 
                                         except Exception as e:
+                                            # print the error traceback
+                                            import traceback
+                                            traceback.print_exc()
                                             st.error(f"❌ Invalid function: {str(e)}")
 
                             with col2:
@@ -1269,7 +1272,7 @@ def main_page():
                 'data_source',
                 'ability',
             ]
-            candidate_keys = [k for k in showed_keys if cur_step_filtered_content_dict[k]]
+            candidate_keys = [k for k in showed_keys if k in cur_step_filtered_content_dict and cur_step_filtered_content_dict[k]]
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
             content_df = pd.DataFrame.from_dict(content_dict)
 
