@@ -1274,6 +1274,13 @@ def main_page():
             ]
             candidate_keys = [k for k in showed_keys if k in cur_step_filtered_content_dict and cur_step_filtered_content_dict[k]]
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
+            unhealthy_keys = []
+            for k in content_dict:
+                if len(content_dict[k]) != len(content_dict['prompt']):
+                    unhealthy_keys.append(k)
+            for k in unhealthy_keys:
+                content_dict.pop(k)
+            print("Keys that have length and prompt length mismatch: ", unhealthy_keys)
             content_df = pd.DataFrame.from_dict(content_dict)
 
             if st.session_state['show_batch_samples']:
