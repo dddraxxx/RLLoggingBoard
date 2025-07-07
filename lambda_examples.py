@@ -85,7 +85,7 @@ def synthetic_chart_tool_call_rate_function(step_data):
     return {k: tool_counts[k]/source_counts for k in tool_counts}
 
 def tool_use_percent_function(step_data):
-    tools = ['image_mark_points', 'image_zoom_in', 'image_draw_line']
+    tools = ['image_mark_points', 'image_zoom_in', 'image_draw_line', 'draw_horizontal_line', 'draw_vertical_line']
     responses = step_data.get('response', [])
     from collections import defaultdict
     import re

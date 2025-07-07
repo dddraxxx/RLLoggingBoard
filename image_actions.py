@@ -10,7 +10,7 @@ import re
 import json
 import numpy as np
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any, Union
 
 import streamlit as st
 from PIL import Image
@@ -22,7 +22,13 @@ verl_spec = importlib.util.find_spec("verl")
 verl_path = verl_spec.submodule_search_locations[0]
 actions_path = os.path.join(verl_path, "toolbox")
 sys.path.append(actions_path)
-from actions import execute_zoom_in_tool, execute_mark_points_tool, execute_draw_line_tool
+from actions import (
+    execute_zoom_in_tool,
+    execute_mark_points_tool,
+    execute_draw_line_tool,
+    execute_draw_horizontal_line_tool,
+    execute_draw_vertical_line_tool,
+)
 
 
 class ImageAction(ABC):
@@ -41,22 +47,25 @@ class ImageAction(ABC):
         pass
 
     @abstractmethod
-    def execute(self, image_path: str, response_text: str, **kwargs) -> None:
+    def execute(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[Tuple[Image.Image, str]]:
         """Execute the image action.
 
         Args:
-            image_path: Path to the image file
+            image_input: Either a path to the image file or a PIL Image object
             response_text: The response text that might contain relevant information
             **kwargs: Additional arguments that might be needed
+
+        Returns:
+            List of (image, caption) tuples representing the processed results
         """
         pass
 
     @abstractmethod
-    def is_applicable(self, image_path: str, response_text: str, **kwargs) -> bool:
+    def is_applicable(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> bool:
         """Check if this action is applicable for the given inputs.
 
         Args:
-            image_path: Path to the image file
+            image_input: Either a path to the image file or a PIL Image object
             response_text: The response text that might contain relevant information
             **kwargs: Additional arguments that might be needed
 
@@ -85,17 +94,23 @@ class ImageAction(ABC):
                     with columns[col_idx]:
                         st.image(image, caption=caption, use_container_width=True)
 
-    def _load_image(self, image_path: str) -> Optional[Image.Image]:
-        """Safely load an image file.
+    def _load_image(self, image_input: Union[str, Image.Image]) -> Optional[Image.Image]:
+        """Load an image from either a file path or PIL Image object.
 
         Args:
-            image_path: Path to the image file
+            image_input: Either a path to the image file or a PIL Image object
 
         Returns:
             PIL Image object or None if loading fails
         """
         try:
-            return Image.open(image_path)
+            if isinstance(image_input, str):
+                return Image.open(image_input)
+            elif isinstance(image_input, Image.Image):
+                return image_input
+            else:
+                st.error(f"Invalid image input type: {type(image_input)}")
+                return None
         except Exception as e:
             st.error(f"Error loading image: {e}")
             return None
@@ -112,15 +127,24 @@ class ShowOriginalImageAction(ImageAction):
     def description(self) -> str:
         return "Display the original image without any modifications"
 
-    def execute(self, image_path: str, response_text: str, **kwargs) -> None:
+    def execute(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[Tuple[Image.Image, str]]:
         """Display the original image."""
-        image = self._load_image(image_path)
+        image = self._load_image(image_input)
         if image:
-            self._render_image_grid([(image, f"Image: {os.path.basename(image_path)}")], cols=1)
+            if isinstance(image_input, str):
+                caption = f"Image: {os.path.basename(image_input)}"
+            else:
+                caption = "Original Image"
+            return [(image, caption)]
+        return []
 
-    def is_applicable(self, image_path: str, response_text: str, **kwargs) -> bool:
-        """Always applicable if image path exists."""
-        return bool(image_path and os.path.exists(image_path))
+    def is_applicable(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> bool:
+        """Always applicable if image input is valid."""
+        if isinstance(image_input, str):
+            return bool(image_input and os.path.exists(image_input))
+        elif isinstance(image_input, Image.Image):
+            return True
+        return False
 
 
 class DetectAndCropBoxesAction(ImageAction):
@@ -135,16 +159,16 @@ class DetectAndCropBoxesAction(ImageAction):
     def description(self) -> str:
         return "Extract box coordinates from image_zoom_in_tool calls and display cropped regions"
 
-    def execute(self, image_path: str, response_text: str, **kwargs) -> None:
-        """Extract tool calls and display cropped regions."""
-        image = self._load_image(image_path)
+    def execute(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[Tuple[Image.Image, str]]:
+        """Extract tool calls and return cropped regions."""
+        image = self._load_image(image_input)
         if not image:
-            return
+            return []
 
         tool_calls = self._extract_zoom_in_tool_calls(response_text)
 
         if not tool_calls:
-            return
+            return []
 
         cropped_images = []
         for idx, coords in enumerate(tool_calls):
@@ -161,12 +185,19 @@ class DetectAndCropBoxesAction(ImageAction):
             except Exception as e:
                 st.warning(f"Error cropping box {idx+1}: {e}")
 
-        self._render_image_grid(cropped_images)
+        return cropped_images
 
-    def is_applicable(self, image_path: str, response_text: str, **kwargs) -> bool:
+    def is_applicable(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> bool:
         """Applicable if image exists and response contains image_zoom_in_tool calls."""
-        if not (image_path and os.path.exists(image_path) and response_text):
+        if isinstance(image_input, str):
+            if not (image_input and os.path.exists(image_input) and response_text):
+                return False
+        elif isinstance(image_input, Image.Image):
+            if not response_text:
+                return False
+        else:
             return False
+
         tool_calls = self._extract_zoom_in_tool_calls(response_text)
         return len(tool_calls) > 0
 
@@ -221,16 +252,16 @@ class MarkPointAction(ImageAction):
     def description(self) -> str:
         return "Detect image_mark_points_tool calls and visualize marked points on the image"
 
-    def execute(self, image_path: str, response_text: str, **kwargs) -> None:
-        """Extract tool calls and display images with marked points."""
-        image = self._load_image(image_path)
+    def execute(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[Tuple[Image.Image, str]]:
+        """Extract tool calls and return images with marked points."""
+        image = self._load_image(image_input)
         if not image:
-            return
+            return []
 
         tool_calls = self._extract_mark_points_tool_calls(response_text)
 
         if not tool_calls:
-            return
+            return []
 
         marked_images = []
         for idx, (points, label, color, size, shape) in enumerate(tool_calls):
@@ -254,12 +285,19 @@ class MarkPointAction(ImageAction):
             except Exception as e:
                 st.error(f"Error processing point {idx+1}: {e}")
 
-        self._render_image_grid(marked_images)
+        return marked_images
 
-    def is_applicable(self, image_path: str, response_text: str, **kwargs) -> bool:
+    def is_applicable(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> bool:
         """Applicable if image exists and response contains image_mark_points_tool calls."""
-        if not (image_path and os.path.exists(image_path) and response_text):
+        if isinstance(image_input, str):
+            if not (image_input and os.path.exists(image_input) and response_text):
+                return False
+        elif isinstance(image_input, Image.Image):
+            if not response_text:
+                return False
+        else:
             return False
+
         tool_calls = self._extract_mark_points_tool_calls(response_text)
         return len(tool_calls) > 0
 
@@ -326,16 +364,16 @@ class DrawLineAction(ImageAction):
     def description(self) -> str:
         return "Detect draw_line_tool calls and draw lines on the image"
 
-    def execute(self, image_path: str, response_text: str, **kwargs) -> None:
-        """Extract tool calls and display images with drawn lines."""
-        image = self._load_image(image_path)
+    def execute(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[Tuple[Image.Image, str]]:
+        """Extract tool calls and return images with drawn lines."""
+        image = self._load_image(image_input)
         if not image:
-            return
+            return []
 
         tool_calls = self._extract_draw_line_tool_calls(response_text)
 
         if not tool_calls:
-            return
+            return []
 
         line_images = []
         for idx, (points, color, thickness) in enumerate(tool_calls):
@@ -353,12 +391,19 @@ class DrawLineAction(ImageAction):
             except Exception as e:
                 st.error(f"Error processing line {idx+1}: {e}")
 
-        self._render_image_grid(line_images)
+        return line_images
 
-    def is_applicable(self, image_path: str, response_text: str, **kwargs) -> bool:
+    def is_applicable(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> bool:
         """Applicable if image exists and response contains draw_line_tool calls."""
-        if not (image_path and os.path.exists(image_path) and response_text):
+        if isinstance(image_input, str):
+            if not (image_input and os.path.exists(image_input) and response_text):
+                return False
+        elif isinstance(image_input, Image.Image):
+            if not response_text:
+                return False
+        else:
             return False
+
         tool_calls = self._extract_draw_line_tool_calls(response_text)
         return len(tool_calls) > 0
 
@@ -410,6 +455,229 @@ class DrawLineAction(ImageAction):
         return tool_calls
 
 
+# ------------------ New Actions: Horizontal & Vertical Lines ------------------ #
+
+
+class DrawHorizontalLineAction(ImageAction):
+    """Action to detect and draw horizontal lines from image_draw_horizontal_line_tool calls."""
+
+    tool_name = ["image_draw_horizontal_line_tool"]
+
+    @property
+    def name(self) -> str:
+        return "Draw Horizontal Lines"
+
+    @property
+    def description(self) -> str:
+        return "Detect image_draw_horizontal_line_tool calls and draw horizontal lines on the image"
+
+    def execute(
+        self,
+        image_input: Union[str, Image.Image],
+        response_text: str,
+        **kwargs,
+    ) -> List[Tuple[Image.Image, str]]:
+        """Extract tool calls and return images with horizontal lines."""
+
+        image = self._load_image(image_input)
+        if not image:
+            return []
+
+        tool_calls = self._extract_draw_horizontal_line_tool_calls(response_text)
+
+        if not tool_calls:
+            return []
+
+        line_images = []
+        for idx, (y_pos, color, thickness, style) in enumerate(tool_calls):
+            try:
+                args = {
+                    "y_position": y_pos,
+                    "color": color,
+                    "thickness": thickness,
+                    "style": style,
+                }
+                line_image = execute_draw_horizontal_line_tool(image, args)
+                caption = f"Horizontal Line {idx + 1}: y={y_pos} ({style})"
+                line_images.append((line_image, caption))
+            except Exception as e:
+                st.error(f"Error processing horizontal line {idx + 1}: {e}")
+
+        return line_images
+
+    def is_applicable(
+        self,
+        image_input: Union[str, Image.Image],
+        response_text: str,
+        **kwargs,
+    ) -> bool:
+        if isinstance(image_input, str):
+            if not (image_input and os.path.exists(image_input) and response_text):
+                return False
+        elif isinstance(image_input, Image.Image):
+            if not response_text:
+                return False
+        else:
+            return False
+
+        tool_calls = self._extract_draw_horizontal_line_tool_calls(response_text)
+        return len(tool_calls) > 0
+
+    def _extract_draw_horizontal_line_tool_calls(
+        self, text: str
+    ) -> List[Tuple[int, Tuple[int, int, int], int, str]]:
+        """Extract horizontal line tool calls from text.
+
+        Returns:
+            List of tuples: [(y_position, color, thickness, style), ...]
+        """
+
+        if not text:
+            return []
+
+        tool_calls = []
+
+        tool_call_matches = re.findall(r"<tool_call>(.*?)</tool_call>", text, re.DOTALL)
+
+        for tool_call_str in tool_call_matches:
+            try:
+                tool_call = json.loads(tool_call_str.strip())
+
+                if tool_call.get("name") in self.tool_name:
+                    args = tool_call.get("arguments", {})
+                    y_pos = args.get("y_position")
+                    color = args.get("color", (255, 0, 0))
+                    thickness = args.get("thickness", 3)
+                    style = args.get("style", "solid")
+
+                    if y_pos is None or not isinstance(y_pos, (int, float)):
+                        continue
+
+                    y_pos = int(y_pos)
+
+                    if isinstance(color, list):
+                        color = tuple(color)
+                    elif isinstance(color, str):
+                        color = (255, 0, 0)
+
+                    tool_calls.append((y_pos, color, thickness, style))
+
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+
+        return tool_calls
+
+
+class DrawVerticalLineAction(ImageAction):
+    """Action to detect and draw vertical lines from image_draw_vertical_line_tool calls."""
+
+    tool_name = ["image_draw_vertical_line_tool"]
+
+    @property
+    def name(self) -> str:
+        return "Draw Vertical Lines"
+
+    @property
+    def description(self) -> str:
+        return "Detect image_draw_vertical_line_tool calls and draw vertical lines on the image"
+
+    def execute(
+        self,
+        image_input: Union[str, Image.Image],
+        response_text: str,
+        **kwargs,
+    ) -> List[Tuple[Image.Image, str]]:
+        """Extract tool calls and return images with vertical lines."""
+
+        image = self._load_image(image_input)
+        if not image:
+            return []
+
+        tool_calls = self._extract_draw_vertical_line_tool_calls(response_text)
+
+        if not tool_calls:
+            return []
+
+        line_images = []
+        for idx, (x_pos, color, thickness, style) in enumerate(tool_calls):
+            try:
+                args = {
+                    "x_position": x_pos,
+                    "color": color,
+                    "thickness": thickness,
+                    "style": style,
+                }
+                line_image = execute_draw_vertical_line_tool(image, args)
+                caption = f"Vertical Line {idx + 1}: x={x_pos} ({style})"
+                line_images.append((line_image, caption))
+            except Exception as e:
+                st.error(f"Error processing vertical line {idx + 1}: {e}")
+
+        return line_images
+
+    def is_applicable(
+        self,
+        image_input: Union[str, Image.Image],
+        response_text: str,
+        **kwargs,
+    ) -> bool:
+        if isinstance(image_input, str):
+            if not (image_input and os.path.exists(image_input) and response_text):
+                return False
+        elif isinstance(image_input, Image.Image):
+            if not response_text:
+                return False
+        else:
+            return False
+
+        tool_calls = self._extract_draw_vertical_line_tool_calls(response_text)
+        return len(tool_calls) > 0
+
+    def _extract_draw_vertical_line_tool_calls(
+        self, text: str
+    ) -> List[Tuple[int, Tuple[int, int, int], int, str]]:
+        """Extract vertical line tool calls from text.
+
+        Returns:
+            List of tuples: [(x_position, color, thickness, style), ...]
+        """
+
+        if not text:
+            return []
+
+        tool_calls = []
+
+        tool_call_matches = re.findall(r"<tool_call>(.*?)</tool_call>", text, re.DOTALL)
+
+        for tool_call_str in tool_call_matches:
+            try:
+                tool_call = json.loads(tool_call_str.strip())
+
+                if tool_call.get("name") in self.tool_name:
+                    args = tool_call.get("arguments", {})
+                    x_pos = args.get("x_position")
+                    color = args.get("color", (255, 0, 0))
+                    thickness = args.get("thickness", 3)
+                    style = args.get("style", "solid")
+
+                    if x_pos is None or not isinstance(x_pos, (int, float)):
+                        continue
+
+                    x_pos = int(x_pos)
+
+                    if isinstance(color, list):
+                        color = tuple(color)
+                    elif isinstance(color, str):
+                        color = (255, 0, 0)
+
+                    tool_calls.append((x_pos, color, thickness, style))
+
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+
+        return tool_calls
+
+
 class ImageActionRegistry:
     """Registry for managing image actions."""
 
@@ -423,14 +691,16 @@ class ImageActionRegistry:
         self.register(DetectAndCropBoxesAction())
         self.register(MarkPointAction())
         self.register(DrawLineAction())
+        self.register(DrawHorizontalLineAction())
+        self.register(DrawVerticalLineAction())
 
     def register(self, action: ImageAction):
         """Register a new image action."""
         self._actions.append(action)
 
-    def get_applicable_actions(self, image_path: str, response_text: str, **kwargs) -> List[ImageAction]:
+    def get_applicable_actions(self, image_input: Union[str, Image.Image], response_text: str, **kwargs) -> List[ImageAction]:
         """Get all applicable actions for the given inputs."""
-        return [action for action in self._actions if action.is_applicable(image_path, response_text, **kwargs)]
+        return [action for action in self._actions if action.is_applicable(image_input, response_text, **kwargs)]
 
     def get_all_actions(self) -> List[ImageAction]:
         """Get all registered actions."""
@@ -455,7 +725,7 @@ def get_image_action_registry() -> ImageActionRegistry:
 
 
 def display_image_with_actions(image_path: str, response_text: str = "", **kwargs):
-    """Display image using all applicable actions.
+    """Display image using all applicable actions with chaining support.
 
     Args:
         image_path: Path to the image file
@@ -480,25 +750,48 @@ def display_image_with_actions(image_path: str, response_text: str = "", **kwarg
         st.info('No applicable image actions found.')
         return
 
-    # Create action selection if multiple actions are available
-    if len(applicable_actions) > 1:
-        with st.expander("🎨 Image Display Options", expanded=True):
-            selected_action_names = st.multiselect(
-                "Select image actions to apply:",
-                options=[action.name for action in applicable_actions],
-                default=[action.name for action in applicable_actions],
-                help="Choose which image processing actions to apply"
-            )
-            selected_actions = [action for action in applicable_actions if action.name in selected_action_names]
-    else:
-        selected_actions = applicable_actions
+        # Create action selection and chaining controls
+    with st.expander("🎨 Image Display Options", expanded=True):
+        selected_action_names = st.multiselect(
+            "Select image actions to apply:",
+            options=[action.name for action in applicable_actions],
+            default=[action.name for action in applicable_actions],
+            help="Choose which image processing actions to apply"
+        )
 
-    # Execute selected actions
-    for action in selected_actions:
+        chain_actions = st.checkbox(
+            "Chain actions",
+            value=False,
+            help="Apply each action to the result of the previous action instead of the original image"
+        )
+
+    selected_actions = [action for action in applicable_actions if action.name in selected_action_names]
+
+    if not selected_actions:
+        return
+
+    # Execute actions
+    current_input = image_path  # Start with original image path
+
+    for i, action in enumerate(selected_actions):
         try:
             with st.container():
                 if len(selected_actions) > 1:
                     st.markdown(f"**{action.name}**")
-                action.execute(image_path, response_text, **kwargs)
+
+                # Execute action and get results
+                results = action.execute(current_input, response_text, **kwargs)
+
+                # Display the results
+                if results:
+                    action._render_image_grid(results)
+
+                    # If chaining is enabled, use the first result as input for the next action
+                    # print(f"action: {action.name}, {chain_actions=}, {results=}")
+                    if not isinstance(action, DetectAndCropBoxesAction) and chain_actions and results:
+                        current_input = results[-1][0]  # Use first result image
+                else:
+                    st.info(f"No results from {action.name}")
+
         except Exception as e:
             st.error(f"Error executing {action.name}: {e}")

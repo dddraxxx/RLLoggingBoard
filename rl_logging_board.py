@@ -1271,8 +1271,15 @@ def main_page():
                 'image_path',
                 'data_source',
                 'ability',
+                'tool_vlm_judge',
             ]
-            candidate_keys = [k for k in showed_keys if k in cur_step_filtered_content_dict and cur_step_filtered_content_dict[k]]
+            not_shown_keys = set(['prompt', 'response', 'ref_response', 'reward', 'ref_reward', 'response_tokens', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs', 'values', 'token_rewards', 'kl', 'avg_kl', 'sum_kl', 'log_ratio', 'avg_log_ratio', 'sum_log_ratio', 'valid_reward', 'ref_valid_reward', 'response_tokens_len', 'ground_truth','valid_reward_gap', 'avg_reward','avg_log_ratio', 'avg_ref_length','avg_ref_reward','avg_ref_valid_reward', 'sum_log_ratio', 'sum_kl','step','avg_length',]) - set(showed_keys)
+            # print("Not shown keys: ", not_shown_keys)
+            all_keys = set(cur_step_filtered_content_dict.keys())
+            print("All keys: ", all_keys)
+            # candidate_keys = [k for k in showed_keys if k in cur_step_filtered_content_dict and cur_step_filtered_content_dict[k]]
+            candidate_keys = all_keys - not_shown_keys
+            print("Candidate keys: ", candidate_keys)
             content_dict = dict([(k, cur_step_filtered_content_dict[k]) for k in candidate_keys])
             unhealthy_keys = []
             for k in content_dict:
