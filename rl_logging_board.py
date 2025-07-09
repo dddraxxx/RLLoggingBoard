@@ -1253,26 +1253,7 @@ def main_page():
                             fig.update_layout(title="Reward Distribution in current batch")
                             st.plotly_chart(fig, use_container_width=True)
 
-            showed_keys = [
-                'prompt',
-                'response',
-                'reward',
-                'ground_truth',
-                'valid_reward',
-                'avg_log_ratio',
-                'sum_log_ratio',
-                'avg_kl',
-                'sum_kl',
-                'ref_response',
-                'ref_reward',
-                'ref_valid_reward',
-                'reward_gap',
-                'valid_reward_gap',
-                'image_path',
-                'data_source',
-                'ability',
-                'tool_vlm_judge',
-            ]
+            showed_keys = ['prompt', 'response', 'reward', 'ground_truth', 'valid_reward', 'avg_log_ratio', 'sum_log_ratio', 'avg_kl', 'sum_kl', 'ref_response', 'ref_reward', 'ref_valid_reward', 'reward_gap', 'valid_reward_gap', 'image_path', 'data_source', 'ability', 'tool_vlm_judge',]
             not_shown_keys = set(['prompt', 'response', 'ref_response', 'reward', 'ref_reward', 'response_tokens', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs', 'values', 'token_rewards', 'kl', 'avg_kl', 'sum_kl', 'log_ratio', 'avg_log_ratio', 'sum_log_ratio', 'valid_reward', 'ref_valid_reward', 'response_tokens_len', 'ground_truth','valid_reward_gap', 'avg_reward','avg_log_ratio', 'avg_ref_length','avg_ref_reward','avg_ref_valid_reward', 'sum_log_ratio', 'sum_kl','step','avg_length',]) - set(showed_keys)
             # print("Not shown keys: ", not_shown_keys)
             all_keys = set(cur_step_filtered_content_dict.keys())
@@ -1501,6 +1482,7 @@ ground_truth.notna()
                     'reward': {'label': 'Reward', 'color': '#000000', 'width': 1},
                     # 'data_source': {'label': 'Data Source', 'color': '#000000', 'width': 1},
                     # 'ability': {'label': 'Ability', 'color': '#000000', 'width': 1}
+                    'count_vision': {'label': 'Count Vision', 'color': '#000000', 'width': 1},
                 }
 
                 # Filter available columns based on what data is present
