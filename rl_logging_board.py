@@ -1483,6 +1483,7 @@ ground_truth.notna()
                     # 'data_source': {'label': 'Data Source', 'color': '#000000', 'width': 1},
                     # 'ability': {'label': 'Ability', 'color': '#000000', 'width': 1}
                     'count_vision': {'label': 'Count Vision', 'color': '#000000', 'width': 1},
+                    "tool_supervised_score": {'label': 'Tool Supervised Score', 'color': '#000000', 'width': 1},
                 }
 
                 # Filter available columns based on what data is present

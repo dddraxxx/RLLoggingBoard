@@ -9,6 +9,12 @@ import numpy as np
 import pandas as pd
 import inspect
 
+def tool_supervised_score_function(step_data):
+    if 'tool_supervised_score' not in step_data:
+        return {}
+    tool_supervised_score = step_data['tool_supervised_score']
+    # print(f"tool_supervised_score: {tool_supervised_score}")
+    return tool_supervised_score
 
 def datasource_count_function(step_data):
     datasource = {}
@@ -103,6 +109,7 @@ def tool_use_percent_function(step_data):
     return tool_counts
 
 LAMBDA_EXAMPLES = [
+    ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
     ("Tool use percent", inspect.getsource(tool_use_percent_function)),
     ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
     ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
