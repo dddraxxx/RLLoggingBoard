@@ -41,7 +41,6 @@ class ImageAction(ABC):
         pass
 
     @property
-    @abstractmethod
     def description(self) -> str:
         """Description of what this action does."""
         pass
@@ -276,10 +275,18 @@ class MarkPointAction(ImageAction):
                 }
                 marked_image = execute_mark_points_tool(image, args)
 
-                if label:
-                    caption = f"Point at {points}: {label}"
+                # Create appropriate caption
+                if isinstance(points[0], list):
+                    # Multiple points
+                    caption = f"Marked {len(points)} points"
+                    if label:
+                        caption += f": {label}"
                 else:
-                    caption = f"Point at {points}"
+                    # Single point
+                    if label:
+                        caption = f"Point at {points}: {label}"
+                    else:
+                        caption = f"Point at {points}"
 
                 marked_images.append((marked_image, caption))
             except Exception as e:
@@ -317,8 +324,13 @@ class MarkPointAction(ImageAction):
 
         for tool_call_str in tool_call_matches:
             try:
+                # Clean and validate the tool call string
+                cleaned_str = tool_call_str.strip()
+                if not cleaned_str:
+                    continue
+
                 # Parse JSON
-                tool_call = json.loads(tool_call_str.strip())
+                tool_call = json.loads(cleaned_str)
 
                 # Check if it's an image_mark_points_tool call
                 if tool_call.get("name") in self.tool_name:
@@ -329,21 +341,39 @@ class MarkPointAction(ImageAction):
                     size = args.get("size", 5)  # Default size
                     shape = args.get("shape", "X")  # Default shape
 
-                    # Validate points format
-                    if (isinstance(points, (list, tuple)) and
-                        len(points) >= 2 and
-                        all(isinstance(coord, (int, float)) for coord in points[:2])):
+                    # Handle both single point [x, y] and multiple points [[x1, y1], [x2, y2], ...] formats
+                    if isinstance(points, (list, tuple)) and len(points) >= 2:
+                        # Check if it's a single point [x, y] or multiple points [[x1, y1], [x2, y2], ...]
+                        if isinstance(points[0], (int, float)):
+                            # Single point format: [x, y]
+                            if all(isinstance(coord, (int, float)) for coord in points[:2]):
+                                point_coords = [int(points[0]), int(points[1])]
 
-                        # Convert to integers for consistency
-                        point_coords = [int(points[0]), int(points[1])]
+                                # Ensure color is tuple
+                                if isinstance(color, list):
+                                    color = tuple(color)
+                                elif isinstance(color, str):
+                                    color = (255, 0, 0)
 
-                        # Ensure color is tuple
-                        if isinstance(color, list):
-                            color = tuple(color)
-                        elif isinstance(color, str):
-                            color = (255, 0, 0)  # Default if string
+                                tool_calls.append((point_coords, label, color, size, shape))
+                        else:
+                            # Multiple points format: [[x1, y1], [x2, y2], ...]
+                            # Pass all points as-is to the execute function
+                            all_points = []
+                            for point in points:
+                                if (isinstance(point, (list, tuple)) and
+                                    len(point) >= 2 and
+                                    all(isinstance(coord, (int, float)) for coord in point[:2])):
+                                    all_points.append([int(point[0]), int(point[1])])
 
-                        tool_calls.append((point_coords, label, color, size, shape))
+                            if all_points:
+                                # Ensure color is tuple
+                                if isinstance(color, list):
+                                    color = tuple(color)
+                                elif isinstance(color, str):
+                                    color = (255, 0, 0)
+
+                                tool_calls.append((all_points, label, color, size, shape))
 
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 # Skip invalid tool calls
@@ -724,8 +754,58 @@ def get_image_action_registry() -> ImageActionRegistry:
     return _get_global_registry()
 
 
+def extract_tool_calls_in_order(response_text: str) -> List[Tuple[str, dict, int]]:
+    """Extract all tool calls from response text in the order they appear.
+
+    Args:
+        response_text: The response text containing tool calls
+
+    Returns:
+        List of tuples: [(tool_name, tool_args, position), ...]
+        where position is the character position in the text
+    """
+    if not response_text:
+        return []
+
+    tool_calls = []
+
+    # Extract tool call blocks using regex with position tracking
+    pattern = r'<tool_call>(.*?)</tool_call>'
+    for match in re.finditer(pattern, response_text, re.DOTALL):
+        try:
+            tool_call_str = match.group(1).strip()
+            tool_call = json.loads(tool_call_str)
+
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("arguments", {})
+            position = match.start()  # Position in text
+
+            if tool_name:
+                tool_calls.append((tool_name, tool_args, position))
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            # Skip invalid tool calls
+            continue
+
+    # Sort by position to maintain order
+    tool_calls.sort(key=lambda x: x[2])
+    return tool_calls
+
+
 def display_image_with_actions(image_path: str, response_text: str = "", **kwargs):
-    """Display image using all applicable actions with chaining support.
+    """Display image using actions. Defaults to sequential display based on tool call occurrence.
+
+    Args:
+        image_path: Path to the image file
+        response_text: The response text that might contain relevant information
+        **kwargs: Additional arguments passed to actions
+    """
+    # Use the new sequential display by default
+    display_image_with_actions_sequential(image_path, response_text, **kwargs)
+
+
+def display_image_with_actions_grouped(image_path: str, response_text: str = "", **kwargs):
+    """Display image using all applicable actions with chaining support (original grouped approach).
 
     Args:
         image_path: Path to the image file
@@ -750,7 +830,7 @@ def display_image_with_actions(image_path: str, response_text: str = "", **kwarg
         st.info('No applicable image actions found.')
         return
 
-        # Create action selection and chaining controls
+    # Create action selection and chaining controls
     with st.expander("🎨 Image Display Options", expanded=True):
         selected_action_names = st.multiselect(
             "Select image actions to apply:",
@@ -771,7 +851,7 @@ def display_image_with_actions(image_path: str, response_text: str = "", **kwarg
         return
 
     # Execute actions
-    current_input = image_path  # Start with original image path
+    current_input = image_path
 
     for i, action in enumerate(selected_actions):
         try:
@@ -787,7 +867,6 @@ def display_image_with_actions(image_path: str, response_text: str = "", **kwarg
                     action._render_image_grid(results)
 
                     # If chaining is enabled, use the first result as input for the next action
-                    # print(f"action: {action.name}, {chain_actions=}, {results=}")
                     if not isinstance(action, DetectAndCropBoxesAction) and chain_actions and results:
                         current_input = results[-1][0]  # Use first result image
                 else:
@@ -795,3 +874,109 @@ def display_image_with_actions(image_path: str, response_text: str = "", **kwarg
 
         except Exception as e:
             st.error(f"Error executing {action.name}: {e}")
+
+
+def display_image_with_actions_sequential(image_path: str, response_text: str = "", **kwargs):
+    """Display image using actions in sequential order based on tool call occurrence.
+
+    Args:
+        image_path: Path to the image file
+        response_text: The response text that might contain relevant information
+        **kwargs: Additional arguments passed to actions
+    """
+    if not image_path:
+        st.info('No image path provided.')
+        return
+
+    if not os.path.exists(image_path):
+        st.info(f'Image not found: {image_path}')
+        return
+
+    # Use global registry instance
+    registry = _get_global_registry()
+
+    # Extract all tool calls in order
+    tool_calls_ordered = extract_tool_calls_in_order(response_text)
+
+    if not tool_calls_ordered:
+        # If no tool calls found, show original image
+        with st.container():
+            st.markdown("**Original Image**")
+            st.image(image_path, use_container_width=True)
+        return
+
+    # Create a mapping of tool names to actions
+    all_actions = registry.get_all_actions()
+    tool_name_to_action = {}
+
+    for action in all_actions:
+        if hasattr(action, 'tool_name') and isinstance(action.tool_name, list):
+            for tool_name in action.tool_name:
+                tool_name_to_action[tool_name] = action
+
+    # Display option controls
+    with st.expander("🎨 Image Display Options", expanded=True):
+        show_original = st.checkbox(
+            "Show original image first",
+            value=True,
+            help="Display the original image before processed results"
+        )
+
+        images_per_row = st.slider(
+            "Images per row",
+            min_value=1,
+            max_value=4,
+            value=2,
+            help="Number of images to display per row"
+        )
+
+    # Show original image if requested
+    if show_original:
+        st.markdown("**Original Image**")
+        st.image(image_path, use_container_width=True)
+        st.divider()
+
+    # Process and display each tool call sequentially
+    current_input = image_path
+    results_to_display = []
+
+    for i, (tool_name, tool_args, position) in enumerate(tool_calls_ordered):
+        if tool_name in tool_name_to_action:
+            action = tool_name_to_action[tool_name]
+
+            try:
+                # Create a synthetic response text with just this tool call for processing
+                synthetic_tool_call = {
+                    "name": tool_name,
+                    "arguments": tool_args
+                }
+                synthetic_response = f"<tool_call>{json.dumps(synthetic_tool_call)}</tool_call>"
+
+                # Execute action with synthetic response containing only this tool call
+                results = action.execute(current_input, synthetic_response, **kwargs)
+
+                if results:
+                    # Store results with tool name for display
+                    for image, caption in results:
+                        tool_display_name = tool_name.replace('_', ' ').replace('image ', '').title()
+                        results_to_display.append((image, f"{tool_display_name}: {caption}", tool_name))
+
+            except Exception as e:
+                st.error(f"Error executing {tool_name}: {e}")
+
+    # Display all results in a grid layout
+    if results_to_display:
+        st.markdown("**Tool Results (in order of occurrence)**")
+
+        # Display images in rows
+        for i in range(0, len(results_to_display), images_per_row):
+            cols = st.columns(images_per_row)
+
+            for j in range(images_per_row):
+                idx = i + j
+                if idx < len(results_to_display):
+                    image, caption, tool_name = results_to_display[idx]
+                    with cols[j]:
+                        st.image(image, caption=caption, use_container_width=True)
+    else:
+        st.info("No valid tool calls found that can be processed.")
