@@ -922,6 +922,12 @@ def display_image_with_actions_sequential(image_path: str, response_text: str = 
             help="Display the original image before processed results"
         )
 
+        chain_actions = st.checkbox(
+            "Chain actions",
+            value=False,
+            help="Apply each action to the result of the previous action instead of the original image"
+        )
+
         images_per_row = st.slider(
             "Images per row",
             min_value=1,
@@ -961,12 +967,17 @@ def display_image_with_actions_sequential(image_path: str, response_text: str = 
                         tool_display_name = tool_name.replace('_', ' ').replace('image ', '').title()
                         results_to_display.append((image, f"{tool_display_name}: {caption}", tool_name))
 
+                    # If chaining is enabled and this is not a crop action, use the last result as input for next action
+                    if chain_actions and not isinstance(action, DetectAndCropBoxesAction) and results:
+                        current_input = results[-1][0]  # Use the last result image as input for next action
+
             except Exception as e:
                 st.error(f"Error executing {tool_name}: {e}")
 
     # Display all results in a grid layout
     if results_to_display:
-        st.markdown("**Tool Results (in order of occurrence)**")
+        action_mode = "Chained" if chain_actions else "Sequential"
+        st.markdown(f"**Tool Results ({action_mode} - in order of occurrence)**")
 
         # Display images in rows
         for i in range(0, len(results_to_display), images_per_row):
