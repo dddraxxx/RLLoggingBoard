@@ -593,10 +593,13 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
     return all_log_paths[selected_option_index]
 
 
+log_file_path = None
+
 def init_sidebar():
     """
     侧边栏实例化。
     """
+    global log_file_path
     st.sidebar.markdown(
         "<h1 style='text-align: center;'>📖 RL Logging Board</h1>",
         unsafe_allow_html=True
@@ -684,6 +687,7 @@ Base Log Dir
             start_step,
             end_step
         )
+    log_file_path = os.path.join(base_root_path, log_name)
 
     with st.sidebar.expander('🧩 module setting', expanded=True):
         st.session_state['show_reward_logging'] = st.checkbox('Reward 曲线图', value=True)
@@ -770,6 +774,8 @@ def main_page():
     """
     Metrics Page.
     """
+    global log_file_path
+
     if "logging_data" not in st.session_state:
         st.info("Please Press 「Load & View」Button to load log.")
     else:
@@ -1560,6 +1566,15 @@ ground_truth.notna()
                                         sample_index < len(cur_step_filtered_content_dict["image_path"])
                                 ):
                                     image_path = cur_step_filtered_content_dict["image_path"][sample_index]
+                                    # check if image_path exists here
+                                    if not os.path.exists(image_path):
+                                        # then search in the same directory of log file for image name with .png extension
+                                        image_path = os.path.join(log_file_path, 'images', os.path.basename(image_path))
+                                        # print(image_path)
+                                        if not os.path.exists(image_path):
+                                            st.info(f'Image path {image_path} does not exist.')
+                                            continue
+
                                     display_image_with_actions(image_path, cur_step_filtered_content_dict["response"][sample_index])
                                 else:
                                     st.info('No `image_path` found in log line data.')
