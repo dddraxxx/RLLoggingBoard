@@ -1145,7 +1145,7 @@ def main_page():
                 step_index = st.slider(
                     f"Step Index({st.session_state['max_step_index']} total steps):",
                     min_value=st.session_state['min_step_index'],
-                    max_value=st.session_state['max_step_index'],
+                    max_value=st.session_state['max_step_index']+1,
                     value=st.session_state['min_step_index'],
                     step=st.session_state['step_gap']
                 )
