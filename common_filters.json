@@ -8,6 +8,7 @@
     "reward > 0.5",
     "reward < 0.5",
     "response.str.len() > 100",
-    "ground_truth.astype('int') < 6"
+    "ground_truth.astype('int') < 6",
+    "ability.str.contains('compare_value')"
   ]
 }

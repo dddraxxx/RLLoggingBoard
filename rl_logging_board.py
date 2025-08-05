@@ -41,11 +41,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
-# Import image actions
-from image_actions import (
-    get_image_action_registry,
+# Import image actions V2
+from image_actions_v2 import (
     display_image_with_actions,
 )
+# from image_actions import (
+#     display_image_with_actions,
+# )
 
 
 st.set_page_config(
@@ -55,8 +57,7 @@ st.set_page_config(
 )
 
 
-# Get the global registry instance from the image_actions module
-IMAGE_ACTION_REGISTRY = get_image_action_registry()
+# V2 uses unified toolbox processing - no registry needed
 
 
 def load_common_filters():

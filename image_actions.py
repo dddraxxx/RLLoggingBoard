@@ -183,6 +183,7 @@ class DetectAndCropBoxesAction(ImageAction):
                 cropped_images.append((cropped_img, caption))
             except Exception as e:
                 st.warning(f"Error cropping box {idx+1}: {e}")
+                print(f"Error cropping box {idx+1}: {e}")
 
         return cropped_images
 
