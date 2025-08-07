@@ -228,12 +228,80 @@ class ImageProcessorV2:
             return f"{tool_name.replace('_', ' ').title()} {step}"
 
 
-def display_image_with_actions_v2(image_path: str, response_text: str = "", **kwargs):
+def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int):
+    """Display processed images from JSONL data.
+
+    Args:
+        processed_images: List of processed image entries from JSONL
+        images_per_row: Number of images to display per row
+    """
+    if not processed_images:
+        st.info("No processed images to display.")
+        return
+
+    # Separate origin and processed images
+    origin_images = [img for img in processed_images if img.get('tool') == 'origin']
+    processed_imgs = [img for img in processed_images if img.get('tool') != 'origin']
+
+    st.markdown("**Processed Images from JSONL**")
+
+    # Show statistics
+    st.caption(f"Total: {len(processed_images)} images | Origin: {len(origin_images)} | Processed: {len(processed_imgs)}")
+
+    # Prepare images for display
+    display_images = []
+
+    # Add origin images first
+    for img in origin_images:
+        if os.path.exists(img['path']):
+            display_images.append({
+                'path': img['path'],
+                'caption': f"Original ({img['tool']})",
+                'tool': img['tool']
+            })
+        else:
+            st.warning(f"Origin image not found: {img['path']}")
+
+    # Add processed images
+    for i, img in enumerate(processed_imgs):
+        if os.path.exists(img['path']):
+            tool_name = img['tool'].replace('_', ' ').title()
+            display_images.append({
+                'path': img['path'],
+                'caption': f"Step {i+1}: {tool_name}",
+                'tool': img['tool']
+            })
+        else:
+            st.warning(f"Processed image not found: {img['path']}")
+
+    if not display_images:
+        st.error("No valid image files found in processed_images paths.")
+        return
+
+    # Display images in rows
+    for i in range(0, len(display_images), images_per_row):
+        cols = st.columns(images_per_row)
+
+        for j in range(images_per_row):
+            idx = i + j
+            if idx < len(display_images):
+                img_info = display_images[idx]
+
+                with cols[j]:
+                    try:
+                        image = Image.open(img_info['path'])
+                        st.image(image, caption=img_info['caption'], use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error loading {img_info['caption']}: {e}")
+
+
+def display_image_with_actions_v2(image_path: str, response_text: str = "", processed_images: Optional[List[Dict[str, str]]] = None, **kwargs):
     """Display image using V2 unified processing with PointToolBoxV6.
 
     Args:
         image_path: Path to the image file
         response_text: The response text that might contain relevant information
+        processed_images: List of processed image entries from JSONL (e.g., [{"tool": "origin", "path": "..."}, {"tool": "zoom_in", "path": "..."}])
         **kwargs: Additional arguments (for compatibility)
     """
     if not image_path:
@@ -243,6 +311,14 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", **kw
     if not os.path.exists(image_path):
         st.info(f'Image not found: {image_path}')
         return
+
+    # Check if we have processed_images data
+    has_processed_images = (
+        processed_images is not None
+        and isinstance(processed_images, list)
+        and len(processed_images) > 0
+        and all(isinstance(item, dict) and 'tool' in item and 'path' in item for item in processed_images)
+    )
 
     # Create processor and process the image
     processor = ImageProcessorV2()
@@ -254,17 +330,34 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", **kw
 
     # Display UI controls
     with st.expander("🎨 Image Display Options", expanded=True):
+        # Choose display mode
+        if has_processed_images:
+            use_processed_images = st.checkbox(
+                "Use processed images from JSONL",
+                value=True,
+                help="Use pre-processed images from the JSONL file instead of processing response text"
+            )
+            if use_processed_images:
+                st.info(f"Found {len(processed_images)} processed images in JSONL data")
+        else:
+            use_processed_images = False
+            if processed_images is not None:
+                st.warning("Processed images data found but invalid format. Using response text processing.")
+
         show_original = st.checkbox(
             "Show original image first",
             value=True,
             help="Display the original image before processed results"
         )
 
-        chain_actions = st.checkbox(
-            "Chain actions",
-            value=False,
-            help="Apply each action to the result of the previous action instead of the original image"
-        )
+        if not use_processed_images:
+            chain_actions = st.checkbox(
+                "Chain actions",
+                value=False,
+                help="Apply each action to the result of the previous action instead of the original image"
+            )
+        else:
+            chain_actions = False  # Not applicable for processed images
 
         images_per_row = st.slider(
             "Images per row",
@@ -274,18 +367,26 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", **kw
             help="Number of images to display per row"
         )
 
-        show_errors = st.checkbox(
-            "Show error details",
-            value=False,
-            help="Display detailed error information for failed tool calls"
-        )
+        if not use_processed_images:
+            show_errors = st.checkbox(
+                "Show error details",
+                value=False,
+                help="Display detailed error information for failed tool calls"
+            )
+        else:
+            show_errors = False  # Not applicable for processed images
 
     # Show original image if requested
     if show_original:
         st.markdown("**Original Image**")
         st.image(result["original_image"], use_container_width=True)
-        if result["processed_steps"]:
+        if result["processed_steps"] or use_processed_images:
             st.divider()
+
+    # Handle processed images mode
+    if use_processed_images and has_processed_images:
+        display_processed_images_from_jsonl(processed_images, images_per_row)
+        return
 
     # Process and display results
     processed_steps = result["processed_steps"]
@@ -362,9 +463,9 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", **kw
 
 
 # Alias for backward compatibility
-def display_image_with_actions(image_path: str, response_text: str = "", **kwargs):
+def display_image_with_actions(image_path: str, response_text: str = "", processed_images: Optional[List[Dict[str, str]]] = None, **kwargs):
     """Backward compatibility alias for the V2 function."""
-    return display_image_with_actions_v2(image_path, response_text, **kwargs)
+    return display_image_with_actions_v2(image_path, response_text, processed_images=processed_images, **kwargs)
 
 
 if __name__ == "__main__":

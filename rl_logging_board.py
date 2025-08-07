@@ -335,6 +335,7 @@ def load_log_file(
                             'response_tokens_len': [],
                             'ground_truth': [],
                             'image_path': [],
+                            'processed_images': [],
                         }
                     elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step and max_samples_each_step > 0:
                         continue
@@ -1260,7 +1261,7 @@ def main_page():
                             fig.update_layout(title="Reward Distribution in current batch")
                             st.plotly_chart(fig, use_container_width=True)
 
-            showed_keys = ['prompt', 'response', 'reward', 'ground_truth', 'valid_reward', 'avg_log_ratio', 'sum_log_ratio', 'avg_kl', 'sum_kl', 'ref_response', 'ref_reward', 'ref_valid_reward', 'reward_gap', 'valid_reward_gap', 'image_path', 'data_source', 'ability', 'tool_vlm_judge',]
+            showed_keys = ['prompt', 'response', 'reward', 'ground_truth', 'valid_reward', 'avg_log_ratio', 'sum_log_ratio', 'avg_kl', 'sum_kl', 'ref_response', 'ref_reward', 'ref_valid_reward', 'reward_gap', 'valid_reward_gap', 'image_path', 'processed_images', 'data_source', 'ability', 'tool_vlm_judge',]
             not_shown_keys = set(['prompt', 'response', 'ref_response', 'reward', 'ref_reward', 'response_tokens', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs', 'values', 'token_rewards', 'kl', 'avg_kl', 'sum_kl', 'log_ratio', 'avg_log_ratio', 'sum_log_ratio', 'valid_reward', 'ref_valid_reward', 'response_tokens_len', 'ground_truth','valid_reward_gap', 'avg_reward','avg_log_ratio', 'avg_ref_length','avg_ref_reward','avg_ref_valid_reward', 'sum_log_ratio', 'sum_kl','step','avg_length',]) - set(showed_keys)
             # print("Not shown keys: ", not_shown_keys)
             all_keys = set(cur_step_filtered_content_dict.keys())
@@ -1576,7 +1577,22 @@ ground_truth.notna()
                                             st.info(f'Image path {image_path} does not exist.')
                                             continue
 
-                                    display_image_with_actions(image_path, cur_step_filtered_content_dict["response"][sample_index])
+                                    # Get processed_images for this sample if available
+                                    processed_images = None
+                                    if (
+                                        "processed_images" in cur_step_filtered_content_dict
+                                        and
+                                        cur_step_filtered_content_dict["processed_images"]
+                                        and
+                                        sample_index < len(cur_step_filtered_content_dict["processed_images"])
+                                    ):
+                                        processed_images = cur_step_filtered_content_dict["processed_images"][sample_index]
+
+                                    display_image_with_actions(
+                                        image_path,
+                                        cur_step_filtered_content_dict["response"][sample_index],
+                                        processed_images=processed_images
+                                    )
                                 else:
                                     st.info('No `image_path` found in log line data.')
 
