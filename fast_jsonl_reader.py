@@ -46,7 +46,7 @@ import argparse
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Try to import tqdm for progress bars
 try:
@@ -253,7 +253,6 @@ def read_jsonl_parallel(
     per_chunk_cap: int = -1,
     verbose: bool = False,
     show_progress: bool = False,
-    progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> Dict[int, Dict[str, List[Any]]]:
     """Easy-to-use wrapper for parallel JSONL reading.
 
@@ -268,7 +267,6 @@ def read_jsonl_parallel(
         per_chunk_cap: Per-chunk cap per step (defaults to max_samples_each_step if <= 0)
         verbose: If True, print timing and summary information
         show_progress: If True, show a tqdm progress bar (requires tqdm)
-        progress_callback: Optional callback function(progress: float, message: str) for custom progress updates
 
     Returns:
         Dictionary mapping step numbers to collected data:
@@ -293,29 +291,20 @@ def read_jsonl_parallel(
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    # Helper function to update progress
-    def update_progress(progress: float, message: str):
-        if progress_callback:
-            progress_callback(progress, message)
-
     # Get file size for progress display
     file_size = os.path.getsize(file_path)
     size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
     size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
     total_size = file_size / size_factor
 
-    update_progress(0.0, f"Starting to read {total_size:,.1f} {size_unit}")
-
     # Compute chunks
     start_time = time.time()
-    update_progress(0.1, "Computing chunk boundaries...")
     chunks = compute_newline_aligned_chunks(file_path, workers)
     chunk_compute_ms = (time.time() - start_time) * 1000.0
 
     if not chunks:
         if verbose:
             print("Empty file or no chunks to process.")
-        update_progress(1.0, "Complete (empty file)")
         return {}
 
     if verbose:
@@ -328,8 +317,6 @@ def read_jsonl_parallel(
     partial_results: List[Optional[Dict[int, Dict[str, List[Any]]]]] = [None] * len(chunks)
     total_lines_read = 0
     total_lines_kept = 0
-
-    update_progress(0.2, f"Processing {len(chunks)} chunks...")
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         future_to_index = {}
@@ -371,10 +358,6 @@ def read_jsonl_parallel(
 
             completed_count += 1
 
-            # Update progress
-            progress_pct = 0.2 + (0.7 * completed_count / len(chunks))  # 20% to 90%
-            update_progress(progress_pct, f"Processed {completed_count}/{len(chunks)} chunks")
-
             if progress_bar:
                 # Show chunk-level progress instead of overall progress
                 # Display current chunk being processed and lines within it
@@ -394,7 +377,6 @@ def read_jsonl_parallel(
     parse_ms = (time.time() - parse_start) * 1000.0
 
     # Merge results
-    update_progress(0.95, "Merging results...")
     merge_start = time.time()
 
     # Show merge progress if progress is enabled
@@ -408,9 +390,6 @@ def read_jsonl_parallel(
     )
     merge_ms = (time.time() - merge_start) * 1000.0
     total_ms = (time.time() - start_time) * 1000.0
-
-    # Complete
-    update_progress(1.0, f"Complete - processed {total_size:,.1f} {size_unit} in {total_ms/1000:.1f}s")
 
     if verbose:
         steps = list(merged.keys())
