@@ -30,6 +30,7 @@ import html
 import re
 
 import orjson as json
+from fast_jsonl_reader import read_jsonl_parallel
 
 
 import numpy as np
@@ -276,10 +277,23 @@ def load_log_file(
     progress_text = f"Processing all files..." + ','.join(logs_names)
     loading_files_bar = st.progress(0., text=progress_text)
 
-    progress_text = f"Processing each file samples..."
-    loading_samples_bar = st.progress(0., text=progress_text)
 
 
+    # Collect all possible keys we might need
+    # Basic keys that should always be collected
+    keys_to_collect = [
+        'step', 'prompt', 'response', 'ref_response', 'reward', 'ref_reward',
+        'response_tokens', 'logprobs', 'ref_logprobs', 'values', 'token_rewards',
+        'valid_reward', 'ref_valid_reward', 'ground_truth', 'image_path'
+    ]
+    
+    # Additional computed keys that will be added later
+    computed_keys = [
+        'probs', 'ref_probs', 'kl', 'avg_kl', 'sum_kl',
+        'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
+        'response_tokens_len', 'processed_images'
+    ]
+    
     for log_index in range(len(all_logs)):
 
         if not all_logs[log_index].endswith('.jsonl'):
@@ -290,103 +304,91 @@ def load_log_file(
             all_logs[log_index]
         )
 
-        # Get actual file size for accurate progress tracking
+        # Get actual file size for progress display
         file_size = os.path.getsize(rl_log_file)
+        size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
+        size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
+        total_size = file_size / size_factor
+        
+        # Use parallel reader
+        start_time = time.time()
+        try:
+            # Determine number of workers based on file size
+            workers = min(16, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 16
+            
+            data = read_jsonl_parallel(
+                file_path=rl_log_file,
+                workers=workers,
+                start_step=start_step,
+                end_step=end_step,
+                step_freq=step_freq,
+                max_samples_each_step=max_samples_each_step,
+                keys_to_collect=keys_to_collect,
+                verbose=False,
+                show_progress=True
+            )
+            
+            # Process the loaded data
+            for step, step_data in data.items():
+                if step not in st.session_state['logging_data']:
+                    # Initialize with all keys (basic + computed)
+                    st.session_state['logging_data'][step] = {}
+                    for key in keys_to_collect + computed_keys:
+                        st.session_state['logging_data'][step][key] = []
+                
+                # Add the loaded data
+                for key in step_data:
+                    if key in st.session_state['logging_data'][step]:
+                        st.session_state['logging_data'][step][key].extend(step_data[key])
+                    else:
+                        st.session_state['logging_data'][step][key] = step_data[key]
+                
+                # Process each sample in this step
+                num_samples = len(step_data.get('prompt', []))
+                for i in range(num_samples):
+                    # Add response_tokens_len if response_tokens exists
+                    if 'response_tokens' in step_data and i < len(step_data['response_tokens']):
+                        response_tokens = step_data['response_tokens'][i]
+                        if response_tokens is not None:
+                            st.session_state['logging_data'][step]['response_tokens_len'].append(len(response_tokens))
+                        else:
+                            st.session_state['logging_data'][step]['response_tokens_len'].append(0)
+                    
+                    # Calculate KL divergence and log ratios if both logprobs are present
+                    if 'logprobs' in step_data and 'ref_logprobs' in step_data:
+                        if i < len(step_data['logprobs']) and i < len(step_data['ref_logprobs']):
+                            logprobs = step_data['logprobs'][i]
+                            ref_logprobs = step_data['ref_logprobs'][i]
+                            if logprobs is not None and ref_logprobs is not None:
+                                logp = np.array(logprobs)
+                                ref_logp = np.array(ref_logprobs)
+                                log_ratio = logp - ref_logp
+                                kl = np.exp(log_ratio) - 1 - log_ratio
+                                
+                                st.session_state['logging_data'][step]['log_ratio'].append(log_ratio.tolist())
+                                st.session_state['logging_data'][step]['avg_log_ratio'].append(np.nanmean(log_ratio))
+                                st.session_state['logging_data'][step]['sum_log_ratio'].append(np.nansum(log_ratio))
+                                st.session_state['logging_data'][step]['kl'].append(kl.tolist())
+                                st.session_state['logging_data'][step]['avg_kl'].append(np.nanmean(kl))
+                                st.session_state['logging_data'][step]['sum_kl'].append(np.nansum(kl))
+                                st.session_state['logging_data'][step]['probs'].append(np.exp(logp).tolist())
+                                st.session_state['logging_data'][step]['ref_probs'].append(np.exp(ref_logp).tolist())
+                
+                # Add step key to the step data if not present
+                if 'step' not in st.session_state['logging_data'][step]:
+                    st.session_state['logging_data'][step]['step'] = [step] * num_samples
+                
+                success_lines += num_samples
+            
+            elapsed_time = time.time() - start_time
+            
+        except Exception as e:
+            print(f"Error loading file {rl_log_file}: {e}")
+            print(traceback.format_exc())
+            error_lines += 1
 
-        with open(rl_log_file, 'rb') as f:
-            start_time = time.time()
-            for i, line in enumerate(f):
-                try:
-                    data = json.loads(line)
-                    data['step'] = int(data['step'])
-
-                    # Apply step range filtering
-                    if data['step'] < start_step:
-                        continue
-                    if end_step != -1 and data['step'] > end_step:
-                        break
-
-                    # Apply step frequency filtering
-                    if data['step'] % step_freq != 0:
-                        continue
-
-                    if data['step'] not in st.session_state['logging_data']:
-                        st.session_state['logging_data'][data['step']] = {
-                            'prompt': [],
-                            'response': [],
-                            'ref_response': [],
-                            'reward': [],
-                            'ref_reward': [],
-                            'response_tokens': [],
-                            'logprobs': [],
-                            'ref_logprobs': [],
-                            'probs': [],
-                            'ref_probs': [],
-                            'values': [],
-                            'token_rewards': [],
-                            'kl': [],
-                            'avg_kl': [],
-                            'sum_kl': [],
-                            'log_ratio': [],
-                            'avg_log_ratio': [],
-                            'sum_log_ratio': [],
-                            'valid_reward': [],
-                            'ref_valid_reward': [],
-                            'response_tokens_len': [],
-                            'ground_truth': [],
-                            'image_path': [],
-                            'processed_images': [],
-                        }
-                    elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step and max_samples_each_step > 0:
-                        continue
-
-                    # for key in st.session_state['logging_data'][data['step']]:
-                    #     if key in data:
-                    #         st.session_state['logging_data'][data['step']][key].append(data[key])
-                    # also update data keys
-                    for key in data:
-                        if key not in st.session_state['logging_data'][data['step']]:
-                            st.session_state['logging_data'][data['step']][key] = []
-                        st.session_state['logging_data'][data['step']][key].append(data[key])
-
-                    if 'response_tokens' in data:
-                        st.session_state['logging_data'][data['step']]['response_tokens_len'].append(len(data['response_tokens']))
-
-                    if 'logprobs' in data and 'ref_logprobs' in data:
-                        logp = np.array(data['logprobs'])
-                        ref_logp = np.array(data['ref_logprobs'])
-                        log_ratio = logp - ref_logp
-                        kl = np.exp(log_ratio) - 1 - log_ratio
-                        st.session_state['logging_data'][data['step']]['log_ratio'].append(log_ratio.tolist())
-                        st.session_state['logging_data'][data['step']]['avg_log_ratio'].append(np.nanmean(log_ratio))
-                        st.session_state['logging_data'][data['step']]['sum_log_ratio'].append(np.nansum(log_ratio))
-                        st.session_state['logging_data'][data['step']]['kl'].append(kl.tolist())
-                        st.session_state['logging_data'][data['step']]['avg_kl'].append(np.nanmean(kl))
-                        st.session_state['logging_data'][data['step']]['sum_kl'].append(np.nansum(kl))
-                        st.session_state['logging_data'][data['step']]['probs'].append(np.exp(logp).tolist())
-                        st.session_state['logging_data'][data['step']]['ref_probs'].append(np.exp(ref_logp).tolist())
-
-                    success_lines += 1
-
-                except:
-                    print(traceback.format_exc())
-                    error_lines += 1
-
-                # Update progress based on actual file position
-                current_position = f.tell()
-                percentage = current_position / file_size
-                size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
-                size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
-                current_size = current_position / size_factor
-                total_size = file_size / size_factor
-                estiamte_finish_time = (time.time() - start_time) / percentage * (1 - percentage)
-                loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {current_size:,.1f} / {total_size:,.1f} {size_unit} ({i + 1} lines)... {estiamte_finish_time:.1f}s")
-
-    percentage = 1.0
-    loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {(success_lines + error_lines)} / {(success_lines + error_lines)} samples...")
-
-    file_percentage = (log_index + 1) / len(all_logs)
-    loading_files_bar.progress(file_percentage, text=f"[{int(file_percentage * 100)}%] Loading {log_index + 1} / {len(all_logs)} files...")
+        file_percentage = (log_index + 1) / len(all_logs)
+        loading_files_bar.progress(file_percentage, text=f"[{int(file_percentage * 100)}%] Loading {log_index + 1} / {len(all_logs)} files...")
 
     st.toast(
         f'Loaded {success_lines + error_lines} sample(s), sucess: {success_lines}, error: {error_lines}.',
