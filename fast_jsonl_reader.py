@@ -388,6 +388,8 @@ def read_jsonl_parallel(
         keys_to_collect=keys_to_collect,
         global_per_step_cap=max_samples_each_step
     )
+    if show_progress and TQDM_AVAILABLE:
+        print(f"Merged {len(merged)} steps in {merge_ms:.1f}ms")
     merge_ms = (time.time() - merge_start) * 1000.0
     total_ms = (time.time() - start_time) * 1000.0
 

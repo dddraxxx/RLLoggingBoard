@@ -286,14 +286,14 @@ def load_log_file(
         'response_tokens', 'logprobs', 'ref_logprobs', 'values', 'token_rewards',
         'valid_reward', 'ref_valid_reward', 'ground_truth', 'image_path'
     ]
-    
+
     # Additional computed keys that will be added later
     computed_keys = [
         'probs', 'ref_probs', 'kl', 'avg_kl', 'sum_kl',
         'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
         'response_tokens_len', 'processed_images'
     ]
-    
+
     for log_index in range(len(all_logs)):
 
         if not all_logs[log_index].endswith('.jsonl'):
@@ -309,13 +309,13 @@ def load_log_file(
         size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
         size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
         total_size = file_size / size_factor
-        
+
         # Use parallel reader
         start_time = time.time()
         try:
             # Determine number of workers based on file size
-            workers = min(16, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 16
-            
+            workers = min(32, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 32
+
             data = read_jsonl_parallel(
                 file_path=rl_log_file,
                 workers=workers,
@@ -327,7 +327,7 @@ def load_log_file(
                 verbose=False,
                 show_progress=True
             )
-            
+
             # Process the loaded data
             for step, step_data in data.items():
                 if step not in st.session_state['logging_data']:
@@ -335,14 +335,14 @@ def load_log_file(
                     st.session_state['logging_data'][step] = {}
                     for key in keys_to_collect + computed_keys:
                         st.session_state['logging_data'][step][key] = []
-                
+
                 # Add the loaded data
                 for key in step_data:
                     if key in st.session_state['logging_data'][step]:
                         st.session_state['logging_data'][step][key].extend(step_data[key])
                     else:
                         st.session_state['logging_data'][step][key] = step_data[key]
-                
+
                 # Process each sample in this step
                 num_samples = len(step_data.get('prompt', []))
                 for i in range(num_samples):
@@ -353,7 +353,7 @@ def load_log_file(
                             st.session_state['logging_data'][step]['response_tokens_len'].append(len(response_tokens))
                         else:
                             st.session_state['logging_data'][step]['response_tokens_len'].append(0)
-                    
+
                     # Calculate KL divergence and log ratios if both logprobs are present
                     if 'logprobs' in step_data and 'ref_logprobs' in step_data:
                         if i < len(step_data['logprobs']) and i < len(step_data['ref_logprobs']):
@@ -364,7 +364,7 @@ def load_log_file(
                                 ref_logp = np.array(ref_logprobs)
                                 log_ratio = logp - ref_logp
                                 kl = np.exp(log_ratio) - 1 - log_ratio
-                                
+
                                 st.session_state['logging_data'][step]['log_ratio'].append(log_ratio.tolist())
                                 st.session_state['logging_data'][step]['avg_log_ratio'].append(np.nanmean(log_ratio))
                                 st.session_state['logging_data'][step]['sum_log_ratio'].append(np.nansum(log_ratio))
@@ -373,15 +373,15 @@ def load_log_file(
                                 st.session_state['logging_data'][step]['sum_kl'].append(np.nansum(kl))
                                 st.session_state['logging_data'][step]['probs'].append(np.exp(logp).tolist())
                                 st.session_state['logging_data'][step]['ref_probs'].append(np.exp(ref_logp).tolist())
-                
+
                 # Add step key to the step data if not present
                 if 'step' not in st.session_state['logging_data'][step]:
                     st.session_state['logging_data'][step]['step'] = [step] * num_samples
-                
+
                 success_lines += num_samples
-            
+
             elapsed_time = time.time() - start_time
-            
+
         except Exception as e:
             print(f"Error loading file {rl_log_file}: {e}")
             print(traceback.format_exc())
