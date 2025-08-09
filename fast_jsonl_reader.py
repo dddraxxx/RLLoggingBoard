@@ -125,6 +125,7 @@ def parse_chunk(
     step_freq: int,
     keys_to_collect: Sequence[str],
     per_chunk_step_cap: int,
+    key_defaults: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[int, Dict[str, List[Any]]], int, int]:
     """Parse a chunk of the file and return per-step aggregated data.
 
@@ -139,6 +140,7 @@ def parse_chunk(
         step_freq: Only accept steps where step % step_freq == 0.
         keys_to_collect: Keys to extract from each JSON object.
         per_chunk_step_cap: Max items per step to retain within this chunk. Use <=0 for unlimited.
+        key_defaults: Default values for missing keys. If None, missing keys will be None.
 
     Returns:
         (results, lines_read, lines_kept)
@@ -149,6 +151,10 @@ def parse_chunk(
     results: Dict[int, Dict[str, List[Any]]] = {}
     lines_read = 0
     lines_kept = 0
+
+    # Use provided defaults or fall back to empty dict (None for missing keys)
+    if key_defaults is None:
+        key_defaults = {}
 
     with open(file_path, "rb") as f:
         f.seek(start_offset)
@@ -194,9 +200,8 @@ def parse_chunk(
                     continue
 
             for key in keys_to_collect:
-                value = data.get(key)
-                if value is not None:
-                    bucket[key].append(value)
+                value = data.get(key, key_defaults.get(key))
+                bucket[key].append(value)
 
             lines_kept += 1
 
@@ -253,6 +258,7 @@ def read_jsonl_parallel(
     per_chunk_cap: int = -1,
     verbose: bool = False,
     show_progress: bool = False,
+    key_defaults: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, List[Any]]]:
     """Easy-to-use wrapper for parallel JSONL reading.
 
@@ -267,6 +273,7 @@ def read_jsonl_parallel(
         per_chunk_cap: Per-chunk cap per step (defaults to max_samples_each_step if <= 0)
         verbose: If True, print timing and summary information
         show_progress: If True, show a tqdm progress bar (requires tqdm)
+        key_defaults: Default values for missing keys. If None, missing keys will be None.
 
     Returns:
         Dictionary mapping step numbers to collected data:
@@ -283,6 +290,9 @@ def read_jsonl_parallel(
 
     if per_chunk_cap <= 0:
         per_chunk_cap = max_samples_each_step
+
+    if key_defaults is None:
+        key_defaults = {}
 
     # Ensure absolute path
     if not os.path.isabs(file_path):
@@ -331,6 +341,7 @@ def read_jsonl_parallel(
                 step_freq,
                 keys_to_collect,
                 per_chunk_cap,
+                key_defaults,
             )
             future_to_index[fut] = idx
 
@@ -388,10 +399,10 @@ def read_jsonl_parallel(
         keys_to_collect=keys_to_collect,
         global_per_step_cap=max_samples_each_step
     )
-    if show_progress and TQDM_AVAILABLE:
-        print(f"Merged {len(merged)} steps in {merge_ms:.1f}ms")
     merge_ms = (time.time() - merge_start) * 1000.0
     total_ms = (time.time() - start_time) * 1000.0
+    if show_progress and TQDM_AVAILABLE:
+        print(f"Merged {len(merged)} steps in {merge_ms:.1f}ms")
 
     if verbose:
         steps = list(merged.keys())
