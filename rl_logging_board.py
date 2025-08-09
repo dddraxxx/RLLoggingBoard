@@ -58,6 +58,32 @@ st.set_page_config(
 )
 
 
+# Default values for missing keys in RL logging data
+KEY_DEFAULTS = {
+    # Text fields
+    'prompt': '',
+    'response': '',
+    'ref_response': '',
+    'ground_truth': '',
+    'image_path': '',
+
+    # Numeric fields
+    'step': 0,
+    'reward': 0.0,
+    'ref_reward': 0.0,
+    'valid_reward': 0.0,
+    'ref_valid_reward': 0.0,
+
+    # Array fields - use None for optional token-level fields to avoid false positives
+    'response_tokens': [],
+    'logprobs': None,
+    'ref_logprobs': None,
+    'values': None,
+    'token_rewards': None,
+    'processed_images': [],
+}
+
+
 # V2 uses unified toolbox processing - no registry needed
 
 
@@ -284,14 +310,14 @@ def load_log_file(
     keys_to_collect = [
         'step', 'prompt', 'response', 'ref_response', 'reward', 'ref_reward',
         'response_tokens', 'logprobs', 'ref_logprobs', 'values', 'token_rewards',
-        'valid_reward', 'ref_valid_reward', 'ground_truth', 'image_path'
+        'valid_reward', 'ref_valid_reward', 'ground_truth', 'image_path', 'processed_images'
     ]
 
     # Additional computed keys that will be added later
     computed_keys = [
         'probs', 'ref_probs', 'kl', 'avg_kl', 'sum_kl',
         'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
-        'response_tokens_len', 'processed_images'
+        'response_tokens_len'
     ]
 
     for log_index in range(len(all_logs)):
@@ -306,9 +332,6 @@ def load_log_file(
 
         # Get actual file size for progress display
         file_size = os.path.getsize(rl_log_file)
-        size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
-        size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
-        total_size = file_size / size_factor
 
         # Use parallel reader
         start_time = time.time()
@@ -325,7 +348,8 @@ def load_log_file(
                 max_samples_each_step=max_samples_each_step,
                 keys_to_collect=keys_to_collect,
                 verbose=False,
-                show_progress=True
+                show_progress=True,
+                key_defaults=KEY_DEFAULTS
             )
 
             # Process the loaded data
@@ -359,7 +383,9 @@ def load_log_file(
                         if i < len(step_data['logprobs']) and i < len(step_data['ref_logprobs']):
                             logprobs = step_data['logprobs'][i]
                             ref_logprobs = step_data['ref_logprobs'][i]
-                            if logprobs is not None and ref_logprobs is not None:
+                            if (logprobs is not None and ref_logprobs is not None
+                                and len(logprobs) > 0 and len(ref_logprobs) > 0
+                                and len(logprobs) == len(ref_logprobs)):
                                 logp = np.array(logprobs)
                                 ref_logp = np.array(ref_logprobs)
                                 log_ratio = logp - ref_logp
@@ -1375,8 +1401,8 @@ ground_truth.notna()
                 st.markdown("**🔧 Select Columns to Display**")
                 available_columns = list(filtered_df.columns)
 
-                # Default columns (exclude ref_reward from default)
-                default_columns = [col for col in available_columns if col not in ['ref_reward', 'image_path']]
+                # Default columns (exclude ref_reward, ref_response, and image_path from default)
+                default_columns = [col for col in available_columns if col not in ['ref_reward', 'ref_response', 'image_path']]
 
                 selected_columns = st.multiselect(
                     "Choose columns to display:",
@@ -1513,7 +1539,7 @@ ground_truth.notna()
                 selected_columns = st.multiselect(
                     'Select columns to display:',
                     options=present_columns,
-                    default=[p for p in present_columns if p not in ['reward_gap']],
+                    default=[p for p in present_columns if p not in ['reward_gap', 'ref_response']],
                     format_func=lambda x: available_columns[x]['label']
                 )
 
@@ -1622,16 +1648,25 @@ ground_truth.notna()
                                     st.info(f'No `{col_name}` found in log line data.')
 
                 # 展示更详细的 token-level 的信息
-                if 'token_rewards' in cur_step_filtered_content_dict and cur_step_filtered_content_dict['token_rewards']:
+                if ('token_rewards' in cur_step_filtered_content_dict
+                    and cur_step_filtered_content_dict['token_rewards']
+                    and sample_index < len(cur_step_filtered_content_dict['token_rewards'])
+                    and cur_step_filtered_content_dict['token_rewards'][sample_index] is not None):
+
                     # 检查 resp_tokens 的长度和 logprobs 的长度是否对齐
                     resp_token_len = len(cur_step_filtered_content_dict['response_tokens'][sample_index])
-                    logp_len = len(cur_step_filtered_content_dict['logprobs'][sample_index])
-                    if resp_token_len != logp_len:
-                        st.info(
-                            f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by &lt;PAD&gt; tokens, CLIP response tokens!',
-                            icon='⚠️'
-                        )
-                        cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
+
+                    # Only check logprobs length if logprobs exists and is not None
+                    if (cur_step_filtered_content_dict.get('logprobs')
+                        and sample_index < len(cur_step_filtered_content_dict['logprobs'])
+                        and cur_step_filtered_content_dict['logprobs'][sample_index] is not None):
+                        logp_len = len(cur_step_filtered_content_dict['logprobs'][sample_index])
+                        if resp_token_len != logp_len:
+                            st.info(
+                                f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by &lt;PAD&gt; tokens, CLIP response tokens!',
+                                icon='⚠️'
+                            )
+                            cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
 
                     show_values = st.multiselect(
                         'Select show value(s)',
@@ -1654,56 +1689,80 @@ ground_truth.notna()
                             if resp_token not in new_dict:
                                 new_dict[resp_token] = []
 
-                        if cur_step_filtered_content_dict['token_rewards']:
+                        if (cur_step_filtered_content_dict['token_rewards']
+                            and sample_index < len(cur_step_filtered_content_dict['token_rewards'])
+                            and cur_step_filtered_content_dict['token_rewards'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['token_rewards'][sample_index])):
                             token_reward = cur_step_filtered_content_dict['token_rewards'][sample_index][token_idx]
                             if 'token_reward' in show_values:
                                 new_dict[resp_token].append(token_reward)
                                 if 'token_reward' not in index_list:
                                     index_list.append('token_reward')
 
-                        if cur_step_filtered_content_dict['log_ratio']:
+                        if (cur_step_filtered_content_dict['log_ratio']
+                            and sample_index < len(cur_step_filtered_content_dict['log_ratio'])
+                            and cur_step_filtered_content_dict['log_ratio'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['log_ratio'][sample_index])):
                             log_ratio = cur_step_filtered_content_dict['log_ratio'][sample_index][token_idx]
                             if 'log_ratio' in show_values:
                                 new_dict[resp_token].append(log_ratio)
                                 if 'log_ratio' not in index_list:
                                     index_list.append('log_ratio')
 
-                        if cur_step_filtered_content_dict['kl']:
+                        if (cur_step_filtered_content_dict['kl']
+                            and sample_index < len(cur_step_filtered_content_dict['kl'])
+                            and cur_step_filtered_content_dict['kl'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['kl'][sample_index])):
                             kl = cur_step_filtered_content_dict['kl'][sample_index][token_idx]
                             if 'kl' in show_values:
                                 new_dict[resp_token].append(kl)
                                 if 'kl' not in index_list:
                                     index_list.append('kl')
 
-                        if cur_step_filtered_content_dict['values']:
+                        if (cur_step_filtered_content_dict['values']
+                            and sample_index < len(cur_step_filtered_content_dict['values'])
+                            and cur_step_filtered_content_dict['values'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['values'][sample_index])):
                             value = cur_step_filtered_content_dict['values'][sample_index][token_idx]
                             if 'token_value' in show_values:
                                 new_dict[resp_token].append(value)
                                 if 'token_value' not in index_list:
                                     index_list.append('token_value')
 
-                        if cur_step_filtered_content_dict['logprobs']:
+                        if (cur_step_filtered_content_dict['logprobs']
+                            and sample_index < len(cur_step_filtered_content_dict['logprobs'])
+                            and cur_step_filtered_content_dict['logprobs'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['logprobs'][sample_index])):
                             logp = cur_step_filtered_content_dict['logprobs'][sample_index][token_idx]
                             if 'logp' in show_values:
                                 new_dict[resp_token].append(logp)
                                 if 'logp' not in index_list:
                                     index_list.append('logp')
 
-                        if cur_step_filtered_content_dict['ref_logprobs']:
+                        if (cur_step_filtered_content_dict['ref_logprobs']
+                            and sample_index < len(cur_step_filtered_content_dict['ref_logprobs'])
+                            and cur_step_filtered_content_dict['ref_logprobs'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['ref_logprobs'][sample_index])):
                             ref_logp = cur_step_filtered_content_dict['ref_logprobs'][sample_index][token_idx]
                             if 'ref_logp' in show_values:
                                 new_dict[resp_token].append(ref_logp)
                                 if 'ref_logp' not in index_list:
                                     index_list.append('ref_logp')
 
-                        if cur_step_filtered_content_dict['probs']:
+                        if (cur_step_filtered_content_dict['probs']
+                            and sample_index < len(cur_step_filtered_content_dict['probs'])
+                            and cur_step_filtered_content_dict['probs'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['probs'][sample_index])):
                             prob = cur_step_filtered_content_dict['probs'][sample_index][token_idx]
                             if 'prob' in show_values:
                                 new_dict[resp_token].append(prob)
                                 if 'prob' not in index_list:
                                     index_list.append('prob')
 
-                        if cur_step_filtered_content_dict['ref_probs']:
+                        if (cur_step_filtered_content_dict['ref_probs']
+                            and sample_index < len(cur_step_filtered_content_dict['ref_probs'])
+                            and cur_step_filtered_content_dict['ref_probs'][sample_index] is not None
+                            and token_idx < len(cur_step_filtered_content_dict['ref_probs'][sample_index])):
                             ref_prob = cur_step_filtered_content_dict['ref_probs'][sample_index][token_idx]
                             if 'ref_prob' in show_values:
                                 new_dict[resp_token].append(ref_prob)
