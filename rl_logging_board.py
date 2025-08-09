@@ -31,6 +31,7 @@ import re
 
 import orjson as json
 from fast_jsonl_reader import read_jsonl_parallel
+from fast_file_search import find_log_files, find_log_directories
 
 
 import numpy as np
@@ -291,13 +292,12 @@ def load_log_file(
     st.session_state['logging_data'] = {}
     error_lines, success_lines = 0, 0
 
-    # all_logs = os.listdir(logdir)
-    # search for any jsonl files end with _rank0.jsonl, search for any depth
-    all_logs = []
-    for root, dirs, files in os.walk(logdir):
-        for file in files:
-            if file.endswith('_rank0.jsonl'):
-                all_logs.append(os.path.relpath(os.path.join(root, file), logdir))
+    # Use parallel file discovery for faster scanning
+    print(f"Scanning for log files in {logdir}...")
+    scan_start = time.time()
+    all_logs = find_log_files(logdir)  # Uses fast parallel search from fast_file_search module
+    scan_time = time.time() - scan_start
+    print(f"Found {len(all_logs)} log files in {scan_time:.2f} seconds")
 
     logs_names = [os.path.basename(log) for log in all_logs]
     progress_text = f"Processing all files..." + ','.join(logs_names)
@@ -305,15 +305,10 @@ def load_log_file(
 
 
 
-    # Collect all possible keys we might need
-    # Basic keys that should always be collected
-    keys_to_collect = [
-        'step', 'prompt', 'response', 'ref_response', 'reward', 'ref_reward',
-        'response_tokens', 'logprobs', 'ref_logprobs', 'values', 'token_rewards',
-        'valid_reward', 'ref_valid_reward', 'ground_truth', 'image_path', 'processed_images'
-    ]
+    # Use None to collect all keys dynamically
+    keys_to_collect = None
 
-    # Additional computed keys that will be added later
+    # Computed keys that will be added based on available data
     computed_keys = [
         'probs', 'ref_probs', 'kl', 'avg_kl', 'sum_kl',
         'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
@@ -346,26 +341,28 @@ def load_log_file(
                 end_step=end_step,
                 step_freq=step_freq,
                 max_samples_each_step=max_samples_each_step,
-                keys_to_collect=keys_to_collect,
+                keys_to_collect=keys_to_collect,  # None for dynamic discovery
                 verbose=False,
                 show_progress=True,
-                key_defaults=KEY_DEFAULTS
+                key_defaults=None  # No defaults - use None for missing keys
             )
 
             # Process the loaded data
             for step, step_data in data.items():
                 if step not in st.session_state['logging_data']:
-                    # Initialize with all keys (basic + computed)
+                    # Initialize step data
                     st.session_state['logging_data'][step] = {}
-                    for key in keys_to_collect + computed_keys:
-                        st.session_state['logging_data'][step][key] = []
 
-                # Add the loaded data
-                for key in step_data:
-                    if key in st.session_state['logging_data'][step]:
-                        st.session_state['logging_data'][step][key].extend(step_data[key])
-                    else:
-                        st.session_state['logging_data'][step][key] = step_data[key]
+                # Add all keys from loaded data
+                for key, values in step_data.items():
+                    if key not in st.session_state['logging_data'][step]:
+                        st.session_state['logging_data'][step][key] = []
+                    st.session_state['logging_data'][step][key].extend(values)
+
+                # Initialize computed keys if they don't exist
+                for key in computed_keys:
+                    if key not in st.session_state['logging_data'][step]:
+                        st.session_state['logging_data'][step][key] = []
 
                 # Process each sample in this step
                 num_samples = len(step_data.get('prompt', []))
@@ -430,6 +427,21 @@ def load_log_file(
     st.session_state['max_step_index'] = max(all_steps)
     st.session_state['min_step_index'] = min(all_steps)
     st.session_state['step_gap'] = 1 if len(all_steps) < 2 else all_steps[1] - all_steps[0]
+
+    # Ensure required keys exist in all steps (like old version)
+    required_keys = [
+        'prompt', 'response', 'ref_response', 'reward', 'ref_reward',
+        'response_tokens', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs',
+        'values', 'token_rewards', 'kl', 'avg_kl', 'sum_kl',
+        'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
+        'valid_reward', 'ref_valid_reward', 'response_tokens_len',
+        'ground_truth', 'image_path', 'processed_images'
+    ]
+    
+    for step in st.session_state['logging_data']:
+        for key in required_keys:
+            if key not in st.session_state['logging_data'][step]:
+                st.session_state['logging_data'][step][key] = []
 
     rewards_dict = {'step': [], 'reward': [], 'ref_reward': []}
     for step in st.session_state['logging_data']:
@@ -549,7 +561,7 @@ def format_log_name(log_path, max_length=40):
 @st.cache_data
 def get_log_directories(base_root_path):
     """
-    Cached function to scan for log directories.
+    Cached function to scan for log directories using parallel discovery.
 
     Args:
         base_root_path (str): Base directory to scan
@@ -557,16 +569,15 @@ def get_log_directories(base_root_path):
     Returns:
         list: List of log directory paths
     """
-    base_path = Path(base_root_path)
     start_time = time.time()
-    all_log_path_in_logdir = [
-        file.parent.relative_to(base_path).as_posix()
-        for file in base_path.glob('**/*_rank0.jsonl')
-    ]
+    
+    # Use the optimized function from fast_file_search module
+    all_log_path_in_logdir = find_log_directories(base_root_path)
+    
     elapsed_time = time.time() - start_time
     print(f"Time taken to scan log directories: {elapsed_time:.2f} seconds")
-    # Remove duplicates and sort
-    return sorted(list(set(all_log_path_in_logdir)))
+    
+    return all_log_path_in_logdir  # Already sorted and deduplicated
 
 
 def create_log_selector(all_log_paths, base_root_path, current_selection=None):
@@ -829,15 +840,21 @@ def main_page():
                 steps, reward, ref_reward, valid_reward, ref_valid_reward = [], [], [], [], []
                 for step, value_dict in st.session_state['logging_data'].items():
                     steps.append(step)
-                    reward.append(value_dict['reward'])
+                    
+                    # Check if 'reward' exists and append
+                    if 'reward' in value_dict:
+                        reward.append(value_dict['reward'])
 
-                    if value_dict['ref_reward']:
+                    # Check if 'ref_reward' exists and has values
+                    if 'ref_reward' in value_dict and value_dict['ref_reward']:
                         ref_reward.append(value_dict['ref_reward'])
 
-                    if value_dict['valid_reward']:
+                    # Check if 'valid_reward' exists and has values
+                    if 'valid_reward' in value_dict and value_dict['valid_reward']:
                         valid_reward.append(value_dict['valid_reward'])
 
-                    if value_dict['ref_valid_reward']:
+                    # Check if 'ref_valid_reward' exists and has values
+                    if 'ref_valid_reward' in value_dict and value_dict['ref_valid_reward']:
                         ref_valid_reward.append(value_dict['ref_valid_reward'])
 
                 all_curves = {
@@ -884,12 +901,12 @@ def main_page():
 
                 if st.session_state['use_logp_as_kl']:
                     for step, value_dict in st.session_state['logging_data'].items():
-                        if all(value_dict['avg_log_ratio']):
+                        if 'avg_log_ratio' in value_dict and value_dict['avg_log_ratio'] and all(v is not None for v in value_dict['avg_log_ratio']):
                             steps.append(step)
                             kl.append(value_dict['avg_log_ratio'])
                 else:
                     for step, value_dict in st.session_state['logging_data'].items():
-                        if all(value_dict['kl']):
+                        if 'avg_kl' in value_dict and value_dict['avg_kl'] and all(v is not None for v in value_dict['avg_kl']):
                             steps.append(step)
                             kl.append(value_dict['avg_kl'])
 

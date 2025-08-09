@@ -344,9 +344,11 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
             if processed_images is not None:
                 st.warning("Processed images data found but invalid format. Using response text processing.")
 
+        # Default to False if using processed images (since original is likely included in processed images)
+        show_original_default = not use_processed_images
         show_original = st.checkbox(
             "Show original image first",
-            value=True,
+            value=show_original_default,
             help="Display the original image before processed results"
         )
 

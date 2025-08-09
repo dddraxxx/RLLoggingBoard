@@ -123,7 +123,7 @@ def parse_chunk(
     start_step: int,
     end_step: int,
     step_freq: int,
-    keys_to_collect: Sequence[str],
+    keys_to_collect: Optional[Sequence[str]],
     per_chunk_step_cap: int,
     key_defaults: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[int, Dict[str, List[Any]]], int, int]:
@@ -138,7 +138,7 @@ def parse_chunk(
         start_step: Minimum step (inclusive).
         end_step: Maximum step (inclusive); use -1 for no limit.
         step_freq: Only accept steps where step % step_freq == 0.
-        keys_to_collect: Keys to extract from each JSON object.
+        keys_to_collect: Keys to extract from each JSON object. If None, collect all keys.
         per_chunk_step_cap: Max items per step to retain within this chunk. Use <=0 for unlimited.
         key_defaults: Default values for missing keys. If None, missing keys will be None.
 
@@ -151,6 +151,7 @@ def parse_chunk(
     results: Dict[int, Dict[str, List[Any]]] = {}
     lines_read = 0
     lines_kept = 0
+    collect_all_keys = keys_to_collect is None
 
     # Use provided defaults or fall back to empty dict (None for missing keys)
     if key_defaults is None:
@@ -189,19 +190,46 @@ def parse_chunk(
             # Initialize per-step buckets lazily
             bucket = results.get(step_value)
             if bucket is None:
-                bucket = {k: [] for k in keys_to_collect}
+                if collect_all_keys:
+                    bucket = {}  # Will add keys dynamically
+                else:
+                    bucket = {k: [] for k in keys_to_collect}
                 results[step_value] = bucket
 
             # Enforce per-chunk cap per step to reduce memory
             if per_chunk_step_cap > 0:
-                # Use first key's length as canonical length; buckets are kept in sync
-                first_key = keys_to_collect[0]
-                if len(bucket[first_key]) >= per_chunk_step_cap:
-                    continue
+                if collect_all_keys:
+                    # Use any existing key for counting
+                    if bucket:
+                        first_key = next(iter(bucket))
+                        if len(bucket[first_key]) >= per_chunk_step_cap:
+                            continue
+                else:
+                    # Use first key's length as canonical length; buckets are kept in sync
+                    first_key = keys_to_collect[0]
+                    if len(bucket[first_key]) >= per_chunk_step_cap:
+                        continue
 
-            for key in keys_to_collect:
-                value = data.get(key, key_defaults.get(key))
-                bucket[key].append(value)
+            if collect_all_keys:
+                # Collect all keys from data
+                # First, get the current count of items in this bucket
+                current_count = len(bucket[next(iter(bucket))]) if bucket else 0
+                
+                for key, value in data.items():
+                    if key not in bucket:
+                        # New key discovered - backfill with None for existing items
+                        bucket[key] = [None] * current_count
+                    bucket[key].append(value)
+                
+                # For any keys in bucket but not in current data, append None
+                for key in bucket:
+                    if key not in data:
+                        bucket[key].append(None)
+            else:
+                # Collect only specified keys
+                for key in keys_to_collect:
+                    value = data.get(key, key_defaults.get(key))
+                    bucket[key].append(value)
 
             lines_kept += 1
 
@@ -210,39 +238,74 @@ def parse_chunk(
 
 def merge_results(
     partials: Iterable[Dict[int, Dict[str, List[Any]]]],
-    keys_to_collect: Sequence[str],
+    keys_to_collect: Optional[Sequence[str]],
     global_per_step_cap: int,
 ) -> Dict[int, Dict[str, List[Any]]]:
     """Merge per-chunk results into a single dict and enforce global caps.
 
     Args:
         partials: Iterable of per-chunk results.
-        keys_to_collect: Keys collected in each partial.
+        keys_to_collect: Keys collected in each partial. If None, merge all discovered keys.
         global_per_step_cap: Max items per step globally; <=0 for unlimited.
 
     Returns:
         Merged results as { step: { key: [values...] } } respecting global caps.
     """
     merged: Dict[int, Dict[str, List[Any]]] = {}
-    for part in partials:
-        for step, step_dict in part.items():
-            dest = merged.get(step)
-            if dest is None:
-                dest = {k: [] for k in keys_to_collect}
-                merged[step] = dest
-
-            if global_per_step_cap > 0:
-                # Determine how many more we can add for this step
-                current_len = len(dest[keys_to_collect[0]])
-                remaining = max(0, global_per_step_cap - current_len)
-                if remaining <= 0:
+    
+    if keys_to_collect is None:
+        # Dynamic key discovery mode
+        for part in partials:
+            for step, step_dict in part.items():
+                dest = merged.get(step)
+                if dest is None:
+                    dest = {}
+                    merged[step] = dest
+                
+                # Get the current length of data for this step (use any existing key)
+                current_len = len(dest[next(iter(dest))]) if dest else 0
+                
+                if global_per_step_cap > 0 and current_len >= global_per_step_cap:
                     continue
-                # Append up to remaining items
-                for k in keys_to_collect:
-                    dest[k].extend(step_dict[k][:remaining])
-            else:
-                for k in keys_to_collect:
-                    dest[k].extend(step_dict[k])
+                    
+                # How many items to add from this chunk
+                chunk_item_count = len(step_dict[next(iter(step_dict))]) if step_dict else 0
+                if global_per_step_cap > 0:
+                    remaining = max(0, global_per_step_cap - current_len)
+                    chunk_item_count = min(chunk_item_count, remaining)
+                
+                # Merge keys from this chunk
+                for k, values in step_dict.items():
+                    if k not in dest:
+                        # New key - backfill with None for existing items
+                        dest[k] = [None] * current_len
+                    dest[k].extend(values[:chunk_item_count])
+                
+                # Backfill any keys that exist in dest but not in this chunk
+                for k in dest:
+                    if k not in step_dict:
+                        dest[k].extend([None] * chunk_item_count)
+    else:
+        # Fixed keys mode (original behavior)
+        for part in partials:
+            for step, step_dict in part.items():
+                dest = merged.get(step)
+                if dest is None:
+                    dest = {k: [] for k in keys_to_collect}
+                    merged[step] = dest
+
+                if global_per_step_cap > 0:
+                    # Determine how many more we can add for this step
+                    current_len = len(dest[keys_to_collect[0]])
+                    remaining = max(0, global_per_step_cap - current_len)
+                    if remaining <= 0:
+                        continue
+                    # Append up to remaining items
+                    for k in keys_to_collect:
+                        dest[k].extend(step_dict[k][:remaining])
+                else:
+                    for k in keys_to_collect:
+                        dest[k].extend(step_dict[k])
 
     return merged
 
@@ -285,8 +348,7 @@ def read_jsonl_parallel(
     else:
         workers = max(1, workers)
 
-    if keys_to_collect is None:
-        keys_to_collect = list(DEFAULT_KEYS)
+    # Don't set default keys - None means collect all keys dynamically
 
     if per_chunk_cap <= 0:
         per_chunk_cap = max_samples_each_step
@@ -441,7 +503,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--keys",
         type=str,
         default=",".join(DEFAULT_KEYS),
-        help="Comma-separated keys to collect from each JSON object",
+        help="Comma-separated keys to collect from each JSON object. Use 'all' to collect all keys dynamically",
     )
     parser.add_argument(
         "--per-chunk-cap",
@@ -467,15 +529,19 @@ def main() -> None:
     args = build_arg_parser().parse_args()
 
     # Parse keys to collect
-    keys_to_collect: List[str] = [k.strip() for k in args.keys.split(",") if k.strip()]
-    if not keys_to_collect:
-        keys_to_collect = list(DEFAULT_KEYS)
+    if args.keys == "all":
+        keys_to_collect = None  # Collect all keys dynamically
+        print("Collecting all keys dynamically")
+    else:
+        keys_to_collect: Optional[List[str]] = [k.strip() for k in args.keys.split(",") if k.strip()]
+        if not keys_to_collect:
+            keys_to_collect = None  # If empty, collect all keys
 
     # Use the modular function
     print(f"Reading file: {args.file}")
     print(f"Parameters: workers={args.workers}, start_step={args.start_step}, end_step={args.end_step}, "
           f"step_freq={args.step_freq}, max_samples_each_step={args.max_samples_each_step}")
-    print(f"Collecting keys: {keys_to_collect}")
+    print(f"Collecting keys: {'all (dynamic discovery)' if keys_to_collect is None else keys_to_collect}")
 
     if not TQDM_AVAILABLE and args.show_progress:
         print("Note: Install tqdm for better progress bars: pip install tqdm")
@@ -505,8 +571,9 @@ def main() -> None:
         display_steps = steps[:min(len(steps), args.show_summary_steps)]
         print("\nSample step counts:")
         for step in display_steps:
-            first_key = keys_to_collect[0] if keys_to_collect else None
-            if first_key and first_key in data[step]:
+            # Get any key from the step data to count items
+            if data[step]:
+                first_key = next(iter(data[step]))
                 count = len(data[step][first_key])
                 print(f"  step={step}: {count} items")
 
