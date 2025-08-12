@@ -30,8 +30,6 @@ import html
 import re
 
 import orjson as json
-from fast_jsonl_reader import read_jsonl_parallel
-from fast_file_search import find_log_files, find_log_directories
 
 
 import numpy as np
@@ -57,32 +55,6 @@ st.set_page_config(
     page_icon="📖",
     layout='wide'
 )
-
-
-# Default values for missing keys in RL logging data
-KEY_DEFAULTS = {
-    # Text fields
-    'prompt': '',
-    'response': '',
-    'ref_response': '',
-    'ground_truth': '',
-    'image_path': '',
-
-    # Numeric fields
-    'step': 0,
-    'reward': 0.0,
-    'ref_reward': 0.0,
-    'valid_reward': 0.0,
-    'ref_valid_reward': 0.0,
-
-    # Array fields - use None for optional token-level fields to avoid false positives
-    'response_tokens': [],
-    'logprobs': None,
-    'ref_logprobs': None,
-    'values': None,
-    'token_rewards': None,
-    'processed_images': [],
-}
 
 
 # V2 uses unified toolbox processing - no registry needed
@@ -292,28 +264,21 @@ def load_log_file(
     st.session_state['logging_data'] = {}
     error_lines, success_lines = 0, 0
 
-    # Use parallel file discovery for faster scanning
-    print(f"Scanning for log files in {logdir}...")
-    scan_start = time.time()
-    all_logs = find_log_files(logdir)  # Uses fast parallel search from fast_file_search module
-    scan_time = time.time() - scan_start
-    print(f"Found {len(all_logs)} log files in {scan_time:.2f} seconds")
+    # all_logs = os.listdir(logdir)
+    # search for any jsonl files end with _rank0.jsonl, search for any depth
+    all_logs = []
+    for root, dirs, files in os.walk(logdir):
+        for file in files:
+            if file.endswith('_rank0.jsonl'):
+                all_logs.append(os.path.relpath(os.path.join(root, file), logdir))
 
     logs_names = [os.path.basename(log) for log in all_logs]
     progress_text = f"Processing all files..." + ','.join(logs_names)
     loading_files_bar = st.progress(0., text=progress_text)
 
+    progress_text = f"Processing each file samples..."
+    loading_samples_bar = st.progress(0., text=progress_text)
 
-
-    # Use None to collect all keys dynamically
-    keys_to_collect = None
-
-    # Computed keys that will be added based on available data
-    computed_keys = [
-        'probs', 'ref_probs', 'kl', 'avg_kl', 'sum_kl',
-        'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
-        'response_tokens_len'
-    ]
 
     for log_index in range(len(all_logs)):
 
@@ -325,93 +290,103 @@ def load_log_file(
             all_logs[log_index]
         )
 
-        # Get actual file size for progress display
+        # Get actual file size for accurate progress tracking
         file_size = os.path.getsize(rl_log_file)
 
-        # Use parallel reader
-        start_time = time.time()
-        try:
-            # Determine number of workers based on file size
-            workers = min(32, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 32
+        with open(rl_log_file, 'rb') as f:
+            start_time = time.time()
+            for i, line in enumerate(f):
+                try:
+                    data = json.loads(line)
+                    data['step'] = int(data['step'])
 
-            data = read_jsonl_parallel(
-                file_path=rl_log_file,
-                workers=workers,
-                start_step=start_step,
-                end_step=end_step,
-                step_freq=step_freq,
-                max_samples_each_step=max_samples_each_step,
-                keys_to_collect=keys_to_collect,  # None for dynamic discovery
-                verbose=False,
-                show_progress=True,
-                key_defaults=None  # No defaults - use None for missing keys
-            )
+                    # Apply step range filtering
+                    if data['step'] < start_step:
+                        continue
+                    if end_step != -1 and data['step'] > end_step:
+                        break
 
-            # Process the loaded data
-            for step, step_data in data.items():
-                if step not in st.session_state['logging_data']:
-                    # Initialize step data
-                    st.session_state['logging_data'][step] = {}
+                    # Apply step frequency filtering
+                    if data['step'] % step_freq != 0:
+                        continue
 
-                # Add all keys from loaded data
-                for key, values in step_data.items():
-                    if key not in st.session_state['logging_data'][step]:
-                        st.session_state['logging_data'][step][key] = []
-                    st.session_state['logging_data'][step][key].extend(values)
+                    if data['step'] not in st.session_state['logging_data']:
+                        st.session_state['logging_data'][data['step']] = {
+                            'prompt': [],
+                            'response': [],
+                            'ref_response': [],
+                            'reward': [],
+                            'ref_reward': [],
+                            'response_tokens': [],
+                            'logprobs': [],
+                            'ref_logprobs': [],
+                            'probs': [],
+                            'ref_probs': [],
+                            'values': [],
+                            'token_rewards': [],
+                            'kl': [],
+                            'avg_kl': [],
+                            'sum_kl': [],
+                            'log_ratio': [],
+                            'avg_log_ratio': [],
+                            'sum_log_ratio': [],
+                            'valid_reward': [],
+                            'ref_valid_reward': [],
+                            'response_tokens_len': [],
+                            'ground_truth': [],
+                            'image_path': [],
+                            'processed_images': [],
+                        }
+                    elif len(st.session_state['logging_data'][data['step']]['prompt']) >= max_samples_each_step and max_samples_each_step > 0:
+                        continue
 
-                # Initialize computed keys if they don't exist
-                for key in computed_keys:
-                    if key not in st.session_state['logging_data'][step]:
-                        st.session_state['logging_data'][step][key] = []
+                    # for key in st.session_state['logging_data'][data['step']]:
+                    #     if key in data:
+                    #         st.session_state['logging_data'][data['step']][key].append(data[key])
+                    # also update data keys
+                    for key in data:
+                        if key not in st.session_state['logging_data'][data['step']]:
+                            st.session_state['logging_data'][data['step']][key] = []
+                        st.session_state['logging_data'][data['step']][key].append(data[key])
 
-                # Process each sample in this step
-                num_samples = len(step_data.get('prompt', []))
-                for i in range(num_samples):
-                    # Add response_tokens_len if response_tokens exists
-                    if 'response_tokens' in step_data and i < len(step_data['response_tokens']):
-                        response_tokens = step_data['response_tokens'][i]
-                        if response_tokens is not None:
-                            st.session_state['logging_data'][step]['response_tokens_len'].append(len(response_tokens))
-                        else:
-                            st.session_state['logging_data'][step]['response_tokens_len'].append(0)
+                    if 'response_tokens' in data:
+                        st.session_state['logging_data'][data['step']]['response_tokens_len'].append(len(data['response_tokens']))
 
-                    # Calculate KL divergence and log ratios if both logprobs are present
-                    if 'logprobs' in step_data and 'ref_logprobs' in step_data:
-                        if i < len(step_data['logprobs']) and i < len(step_data['ref_logprobs']):
-                            logprobs = step_data['logprobs'][i]
-                            ref_logprobs = step_data['ref_logprobs'][i]
-                            if (logprobs is not None and ref_logprobs is not None
-                                and len(logprobs) > 0 and len(ref_logprobs) > 0
-                                and len(logprobs) == len(ref_logprobs)):
-                                logp = np.array(logprobs)
-                                ref_logp = np.array(ref_logprobs)
-                                log_ratio = logp - ref_logp
-                                kl = np.exp(log_ratio) - 1 - log_ratio
+                    if 'logprobs' in data and 'ref_logprobs' in data:
+                        logp = np.array(data['logprobs'])
+                        ref_logp = np.array(data['ref_logprobs'])
+                        log_ratio = logp - ref_logp
+                        kl = np.exp(log_ratio) - 1 - log_ratio
+                        st.session_state['logging_data'][data['step']]['log_ratio'].append(log_ratio.tolist())
+                        st.session_state['logging_data'][data['step']]['avg_log_ratio'].append(np.nanmean(log_ratio))
+                        st.session_state['logging_data'][data['step']]['sum_log_ratio'].append(np.nansum(log_ratio))
+                        st.session_state['logging_data'][data['step']]['kl'].append(kl.tolist())
+                        st.session_state['logging_data'][data['step']]['avg_kl'].append(np.nanmean(kl))
+                        st.session_state['logging_data'][data['step']]['sum_kl'].append(np.nansum(kl))
+                        st.session_state['logging_data'][data['step']]['probs'].append(np.exp(logp).tolist())
+                        st.session_state['logging_data'][data['step']]['ref_probs'].append(np.exp(ref_logp).tolist())
 
-                                st.session_state['logging_data'][step]['log_ratio'].append(log_ratio.tolist())
-                                st.session_state['logging_data'][step]['avg_log_ratio'].append(np.nanmean(log_ratio))
-                                st.session_state['logging_data'][step]['sum_log_ratio'].append(np.nansum(log_ratio))
-                                st.session_state['logging_data'][step]['kl'].append(kl.tolist())
-                                st.session_state['logging_data'][step]['avg_kl'].append(np.nanmean(kl))
-                                st.session_state['logging_data'][step]['sum_kl'].append(np.nansum(kl))
-                                st.session_state['logging_data'][step]['probs'].append(np.exp(logp).tolist())
-                                st.session_state['logging_data'][step]['ref_probs'].append(np.exp(ref_logp).tolist())
+                    success_lines += 1
 
-                # Add step key to the step data if not present
-                if 'step' not in st.session_state['logging_data'][step]:
-                    st.session_state['logging_data'][step]['step'] = [step] * num_samples
+                except:
+                    print(traceback.format_exc())
+                    error_lines += 1
 
-                success_lines += num_samples
+                # Update progress based on actual file position
+                current_position = f.tell()
+                percentage = current_position / file_size
+                size_unit = 'MB' if file_size > 1_000_000 else 'KB' if file_size > 1_000 else 'bytes'
+                size_factor = 1_000_000 if size_unit == 'MB' else 1_000 if size_unit == 'KB' else 1
+                current_size = current_position / size_factor
+                total_size = file_size / size_factor
+                estiamte_finish_time = (time.time() - start_time) / percentage * (1 - percentage)
+                loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {current_size:,.1f} / {total_size:,.1f} {size_unit} ({i + 1} lines)... {estiamte_finish_time:.1f}s")
 
-            elapsed_time = time.time() - start_time
+    percentage = 1.0
+    loading_samples_bar.progress(percentage, text=f"[{int(percentage * 100)}%] Processing {(success_lines + error_lines)} / {(success_lines + error_lines)} samples...")
 
-        except Exception as e:
-            print(f"Error loading file {rl_log_file}: {e}")
-            print(traceback.format_exc())
-            error_lines += 1
-
-        file_percentage = (log_index + 1) / len(all_logs)
-        loading_files_bar.progress(file_percentage, text=f"[{int(file_percentage * 100)}%] Loading {log_index + 1} / {len(all_logs)} files...")
+    file_percentage = (log_index + 1) / len(all_logs)
+    loading_files_bar.progress(file_percentage, text=f"[{int(file_percentage * 100)}%] Loading {log_index + 1} / {len(all_logs)} files...")
 
     st.toast(
         f'Loaded {success_lines + error_lines} sample(s), sucess: {success_lines}, error: {error_lines}.',
@@ -427,21 +402,6 @@ def load_log_file(
     st.session_state['max_step_index'] = max(all_steps)
     st.session_state['min_step_index'] = min(all_steps)
     st.session_state['step_gap'] = 1 if len(all_steps) < 2 else all_steps[1] - all_steps[0]
-
-    # Ensure required keys exist in all steps (like old version)
-    required_keys = [
-        'prompt', 'response', 'ref_response', 'reward', 'ref_reward',
-        'response_tokens', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs',
-        'values', 'token_rewards', 'kl', 'avg_kl', 'sum_kl',
-        'log_ratio', 'avg_log_ratio', 'sum_log_ratio',
-        'valid_reward', 'ref_valid_reward', 'response_tokens_len',
-        'ground_truth', 'image_path', 'processed_images'
-    ]
-    
-    for step in st.session_state['logging_data']:
-        for key in required_keys:
-            if key not in st.session_state['logging_data'][step]:
-                st.session_state['logging_data'][step][key] = []
 
     rewards_dict = {'step': [], 'reward': [], 'ref_reward': []}
     for step in st.session_state['logging_data']:
@@ -561,7 +521,7 @@ def format_log_name(log_path, max_length=40):
 @st.cache_data
 def get_log_directories(base_root_path):
     """
-    Cached function to scan for log directories using parallel discovery.
+    Cached function to scan for log directories.
 
     Args:
         base_root_path (str): Base directory to scan
@@ -569,15 +529,16 @@ def get_log_directories(base_root_path):
     Returns:
         list: List of log directory paths
     """
+    base_path = Path(base_root_path)
     start_time = time.time()
-    
-    # Use the optimized function from fast_file_search module
-    all_log_path_in_logdir = find_log_directories(base_root_path)
-    
+    all_log_path_in_logdir = [
+        file.parent.relative_to(base_path).as_posix()
+        for file in base_path.glob('**/*_rank0.jsonl')
+    ]
     elapsed_time = time.time() - start_time
     print(f"Time taken to scan log directories: {elapsed_time:.2f} seconds")
-    
-    return all_log_path_in_logdir  # Already sorted and deduplicated
+    # Remove duplicates and sort
+    return sorted(list(set(all_log_path_in_logdir)))
 
 
 def create_log_selector(all_log_paths, base_root_path, current_selection=None):
@@ -840,21 +801,15 @@ def main_page():
                 steps, reward, ref_reward, valid_reward, ref_valid_reward = [], [], [], [], []
                 for step, value_dict in st.session_state['logging_data'].items():
                     steps.append(step)
-                    
-                    # Check if 'reward' exists and append
-                    if 'reward' in value_dict:
-                        reward.append(value_dict['reward'])
+                    reward.append(value_dict['reward'])
 
-                    # Check if 'ref_reward' exists and has values
-                    if 'ref_reward' in value_dict and value_dict['ref_reward']:
+                    if value_dict['ref_reward']:
                         ref_reward.append(value_dict['ref_reward'])
 
-                    # Check if 'valid_reward' exists and has values
-                    if 'valid_reward' in value_dict and value_dict['valid_reward']:
+                    if value_dict['valid_reward']:
                         valid_reward.append(value_dict['valid_reward'])
 
-                    # Check if 'ref_valid_reward' exists and has values
-                    if 'ref_valid_reward' in value_dict and value_dict['ref_valid_reward']:
+                    if value_dict['ref_valid_reward']:
                         ref_valid_reward.append(value_dict['ref_valid_reward'])
 
                 all_curves = {
@@ -901,12 +856,12 @@ def main_page():
 
                 if st.session_state['use_logp_as_kl']:
                     for step, value_dict in st.session_state['logging_data'].items():
-                        if 'avg_log_ratio' in value_dict and value_dict['avg_log_ratio'] and all(v is not None for v in value_dict['avg_log_ratio']):
+                        if all(value_dict['avg_log_ratio']):
                             steps.append(step)
                             kl.append(value_dict['avg_log_ratio'])
                 else:
                     for step, value_dict in st.session_state['logging_data'].items():
-                        if 'avg_kl' in value_dict and value_dict['avg_kl'] and all(v is not None for v in value_dict['avg_kl']):
+                        if all(value_dict['kl']):
                             steps.append(step)
                             kl.append(value_dict['avg_kl'])
 
@@ -981,12 +936,8 @@ def main_page():
                             first_result = func_results[0]
                             if isinstance(first_result, dict):
                                 # Handle grouped data - create separate lines for each group
-                                # Collect all unique keys from all results, not just the first one
-                                group_keys = set()
-                                for result in func_results:
-                                    if isinstance(result, dict):
-                                        group_keys.update(result.keys())
-                                
+                                group_keys = first_result.keys()
+
                                 for group_key in group_keys:
                                     group_y_data = []
                                     for result in func_results:
@@ -1422,8 +1373,8 @@ ground_truth.notna()
                 st.markdown("**🔧 Select Columns to Display**")
                 available_columns = list(filtered_df.columns)
 
-                # Default columns (exclude ref_reward, ref_response, and image_path from default)
-                default_columns = [col for col in available_columns if col not in ['ref_reward', 'ref_response', 'image_path']]
+                # Default columns (exclude ref_reward from default)
+                default_columns = [col for col in available_columns if col not in ['ref_reward', 'image_path']]
 
                 selected_columns = st.multiselect(
                     "Choose columns to display:",
@@ -1537,8 +1488,8 @@ ground_truth.notna()
                     'image_path': {'label': 'Image', 'color': '#FF69B4', 'width': 4},
                     'ground_truth': {'label': 'Ground Truth', 'color': '#000000', 'width': 1},
                     'reward': {'label': 'Reward', 'color': '#000000', 'width': 1},
-                    # 'data_source': {'label': 'Data Source', 'color': '#000000', 'width': 1},
-                    # 'ability': {'label': 'Ability', 'color': '#000000', 'width': 1}
+                    'data_source': {'label': 'Data Source', 'color': '#000000', 'width': 1},
+                    'ability': {'label': 'Ability', 'color': '#000000', 'width': 1},
                     'count_vision': {'label': 'Count Vision', 'color': '#000000', 'width': 1},
                     "tool_supervised_score": {'label': 'Tool Supervised Score', 'color': '#000000', 'width': 1},
                 }
@@ -1560,7 +1511,7 @@ ground_truth.notna()
                 selected_columns = st.multiselect(
                     'Select columns to display:',
                     options=present_columns,
-                    default=[p for p in present_columns if p not in ['reward_gap', 'ref_response']],
+                    default=[p for p in present_columns if p not in ['reward_gap']],
                     format_func=lambda x: available_columns[x]['label']
                 )
 
@@ -1669,25 +1620,16 @@ ground_truth.notna()
                                     st.info(f'No `{col_name}` found in log line data.')
 
                 # 展示更详细的 token-level 的信息
-                if ('token_rewards' in cur_step_filtered_content_dict
-                    and cur_step_filtered_content_dict['token_rewards']
-                    and sample_index < len(cur_step_filtered_content_dict['token_rewards'])
-                    and cur_step_filtered_content_dict['token_rewards'][sample_index] is not None):
-
+                if 'token_rewards' in cur_step_filtered_content_dict and cur_step_filtered_content_dict['token_rewards']:
                     # 检查 resp_tokens 的长度和 logprobs 的长度是否对齐
                     resp_token_len = len(cur_step_filtered_content_dict['response_tokens'][sample_index])
-
-                    # Only check logprobs length if logprobs exists and is not None
-                    if (cur_step_filtered_content_dict.get('logprobs')
-                        and sample_index < len(cur_step_filtered_content_dict['logprobs'])
-                        and cur_step_filtered_content_dict['logprobs'][sample_index] is not None):
-                        logp_len = len(cur_step_filtered_content_dict['logprobs'][sample_index])
-                        if resp_token_len != logp_len:
-                            st.info(
-                                f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by &lt;PAD&gt; tokens, CLIP response tokens!',
-                                icon='⚠️'
-                            )
-                            cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
+                    logp_len = len(cur_step_filtered_content_dict['logprobs'][sample_index])
+                    if resp_token_len != logp_len:
+                        st.info(
+                            f'Note: `resp_tokens` (len: {resp_token_len}) is not equal to `logprobs` (len: {logp_len}), this may caused by &lt;PAD&gt; tokens, CLIP response tokens!',
+                            icon='⚠️'
+                        )
+                        cur_step_filtered_content_dict['response_tokens'][sample_index] = cur_step_filtered_content_dict['response_tokens'][sample_index][:logp_len]
 
                     show_values = st.multiselect(
                         'Select show value(s)',
@@ -1710,80 +1652,56 @@ ground_truth.notna()
                             if resp_token not in new_dict:
                                 new_dict[resp_token] = []
 
-                        if (cur_step_filtered_content_dict['token_rewards']
-                            and sample_index < len(cur_step_filtered_content_dict['token_rewards'])
-                            and cur_step_filtered_content_dict['token_rewards'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['token_rewards'][sample_index])):
+                        if cur_step_filtered_content_dict['token_rewards']:
                             token_reward = cur_step_filtered_content_dict['token_rewards'][sample_index][token_idx]
                             if 'token_reward' in show_values:
                                 new_dict[resp_token].append(token_reward)
                                 if 'token_reward' not in index_list:
                                     index_list.append('token_reward')
 
-                        if (cur_step_filtered_content_dict['log_ratio']
-                            and sample_index < len(cur_step_filtered_content_dict['log_ratio'])
-                            and cur_step_filtered_content_dict['log_ratio'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['log_ratio'][sample_index])):
+                        if cur_step_filtered_content_dict['log_ratio']:
                             log_ratio = cur_step_filtered_content_dict['log_ratio'][sample_index][token_idx]
                             if 'log_ratio' in show_values:
                                 new_dict[resp_token].append(log_ratio)
                                 if 'log_ratio' not in index_list:
                                     index_list.append('log_ratio')
 
-                        if (cur_step_filtered_content_dict['kl']
-                            and sample_index < len(cur_step_filtered_content_dict['kl'])
-                            and cur_step_filtered_content_dict['kl'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['kl'][sample_index])):
+                        if cur_step_filtered_content_dict['kl']:
                             kl = cur_step_filtered_content_dict['kl'][sample_index][token_idx]
                             if 'kl' in show_values:
                                 new_dict[resp_token].append(kl)
                                 if 'kl' not in index_list:
                                     index_list.append('kl')
 
-                        if (cur_step_filtered_content_dict['values']
-                            and sample_index < len(cur_step_filtered_content_dict['values'])
-                            and cur_step_filtered_content_dict['values'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['values'][sample_index])):
+                        if cur_step_filtered_content_dict['values']:
                             value = cur_step_filtered_content_dict['values'][sample_index][token_idx]
                             if 'token_value' in show_values:
                                 new_dict[resp_token].append(value)
                                 if 'token_value' not in index_list:
                                     index_list.append('token_value')
 
-                        if (cur_step_filtered_content_dict['logprobs']
-                            and sample_index < len(cur_step_filtered_content_dict['logprobs'])
-                            and cur_step_filtered_content_dict['logprobs'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['logprobs'][sample_index])):
+                        if cur_step_filtered_content_dict['logprobs']:
                             logp = cur_step_filtered_content_dict['logprobs'][sample_index][token_idx]
                             if 'logp' in show_values:
                                 new_dict[resp_token].append(logp)
                                 if 'logp' not in index_list:
                                     index_list.append('logp')
 
-                        if (cur_step_filtered_content_dict['ref_logprobs']
-                            and sample_index < len(cur_step_filtered_content_dict['ref_logprobs'])
-                            and cur_step_filtered_content_dict['ref_logprobs'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['ref_logprobs'][sample_index])):
+                        if cur_step_filtered_content_dict['ref_logprobs']:
                             ref_logp = cur_step_filtered_content_dict['ref_logprobs'][sample_index][token_idx]
                             if 'ref_logp' in show_values:
                                 new_dict[resp_token].append(ref_logp)
                                 if 'ref_logp' not in index_list:
                                     index_list.append('ref_logp')
 
-                        if (cur_step_filtered_content_dict['probs']
-                            and sample_index < len(cur_step_filtered_content_dict['probs'])
-                            and cur_step_filtered_content_dict['probs'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['probs'][sample_index])):
+                        if cur_step_filtered_content_dict['probs']:
                             prob = cur_step_filtered_content_dict['probs'][sample_index][token_idx]
                             if 'prob' in show_values:
                                 new_dict[resp_token].append(prob)
                                 if 'prob' not in index_list:
                                     index_list.append('prob')
 
-                        if (cur_step_filtered_content_dict['ref_probs']
-                            and sample_index < len(cur_step_filtered_content_dict['ref_probs'])
-                            and cur_step_filtered_content_dict['ref_probs'][sample_index] is not None
-                            and token_idx < len(cur_step_filtered_content_dict['ref_probs'][sample_index])):
+                        if cur_step_filtered_content_dict['ref_probs']:
                             ref_prob = cur_step_filtered_content_dict['ref_probs'][sample_index][token_idx]
                             if 'ref_prob' in show_values:
                                 new_dict[resp_token].append(ref_prob)

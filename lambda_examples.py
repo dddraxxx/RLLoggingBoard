@@ -70,7 +70,7 @@ def tool_call_to_source_percent_function(step_data):
 def synthetic_chart_tool_call_rate_function(step_data):
     if 'data_source' not in step_data:
         return {}
-    tools = ['image_mark_points', 'image_zoom_in', 'image_draw_line']
+    tools = ['image_mark_points', 'image_zoom_in', 'image_rotate', 'image_flip', 'image_draw_horizontal_line', 'image_draw_vertical_line']
     responses = step_data.get('response', [])
     from collections import defaultdict
     import re
@@ -78,8 +78,8 @@ def synthetic_chart_tool_call_rate_function(step_data):
     tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
     tool_counts = defaultdict(int)
     source_counts = 0
-    for datasource, response in zip(step_data['data_source'], responses):
-        if datasource not in ['synthetic_chart']:
+    for ability, datasource, response in zip(step_data['ability'], step_data['data_source'], responses):
+        if 'docvqa' not in datasource or ('rot' in ability or 'flip' in ability):
             continue
         source_counts += 1
         tool_call_content = tool_call_content_re.findall(response)
@@ -97,7 +97,6 @@ def tool_use_percent_function(step_data):
     import re
     # inside <tool_call>...</tool_call>
     tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
-    tool_call_content_list = []
     tool_counts = defaultdict(int)
     for response in responses:
         tool_call_content = tool_call_content_re.findall(response)
@@ -106,7 +105,8 @@ def tool_use_percent_function(step_data):
                 for tool in tools:
                     if tool in tool_call:
                         tool_counts[tool] += 1
-    return tool_counts
+    total_cases = len(responses)
+    return {k: tool_counts[k]/total_cases for k in tool_counts}
 
 LAMBDA_EXAMPLES = [
     ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
@@ -116,5 +116,5 @@ LAMBDA_EXAMPLES = [
     ("Datasource reward", inspect.getsource(datasource_reward_function)),
     ("Datasource count", inspect.getsource(datasource_count_function)),
     ("Tool usage analysis", inspect.getsource(tool_calls_analysis_function)),
-    ("Synthetic chart tool call rate", inspect.getsource(synthetic_chart_tool_call_rate_function)),
+    ("rate", inspect.getsource(synthetic_chart_tool_call_rate_function)),
 ]

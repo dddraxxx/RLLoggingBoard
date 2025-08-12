@@ -10,6 +10,8 @@
     "response.str.len() > 100",
     "ground_truth.astype('int') < 6",
     "ability.str.contains('compare_value')",
-    "tool_supervised_score > 0.5"
+    "~ability.str.contains('rot') & ~ability.str.contains('flip') & ability.str.contains('docvqa')",
+    "tool_supervised_score > 0.5",
+    "data_source.str.contains('vstar')"
   ]
 }
