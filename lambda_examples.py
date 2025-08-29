@@ -67,7 +67,7 @@ def tool_call_to_source_percent_function(step_data):
         source_counts[datasource] += 1
     return {k: tool_counts[k]/(source_counts[k]+1e-6) for k in tool_counts}
 
-def synthetic_chart_tool_call_rate_function(step_data):
+def docvqa_aug_tool_call_rate_function(step_data):
     if 'data_source' not in step_data:
         return {}
     tools = ['image_mark_points', 'image_zoom_in', 'image_rotate', 'image_flip', 'image_draw_horizontal_line', 'image_draw_vertical_line']
@@ -79,7 +79,30 @@ def synthetic_chart_tool_call_rate_function(step_data):
     tool_counts = defaultdict(int)
     source_counts = 0
     for ability, datasource, response in zip(step_data['ability'], step_data['data_source'], responses):
-        if 'docvqa' not in datasource or ('rot' in ability or 'flip' in ability):
+        if not ('docvqa' in datasource and ('rot' in ability or 'flip' in ability)):
+            continue
+        source_counts += 1
+        tool_call_content = tool_call_content_re.findall(response)
+        if tool_call_content:
+            for tool_call in tool_call_content:
+                for tool in tools:
+                    if tool in tool_call:
+                        tool_counts[tool] += 1
+    return {k: tool_counts[k]/source_counts for k in tool_counts}
+
+def docvqa_non_aug_tool_call_rate_function(step_data):
+    if 'data_source' not in step_data:
+        return {}
+    tools = ['image_mark_points', 'image_zoom_in', 'image_rotate', 'image_flip', 'image_draw_horizontal_line', 'image_draw_vertical_line']
+    responses = step_data.get('response', [])
+    from collections import defaultdict
+    import re
+    # inside <tool_call>...</tool_call>
+    tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    tool_counts = defaultdict(int)
+    source_counts = 0
+    for ability, datasource, response in zip(step_data['ability'], step_data['data_source'], responses):
+        if 'docvqa' in datasource and ('rot' in ability or 'flip' in ability):
             continue
         source_counts += 1
         tool_call_content = tool_call_content_re.findall(response)
@@ -116,5 +139,6 @@ LAMBDA_EXAMPLES = [
     ("Datasource reward", inspect.getsource(datasource_reward_function)),
     ("Datasource count", inspect.getsource(datasource_count_function)),
     ("Tool usage analysis", inspect.getsource(tool_calls_analysis_function)),
-    ("rate", inspect.getsource(synthetic_chart_tool_call_rate_function)),
+    ("Docvqa aug tool call rate", inspect.getsource(docvqa_aug_tool_call_rate_function)),
+    ("Docvqa non aug tool call rate", inspect.getsource(docvqa_non_aug_tool_call_rate_function)),
 ]
