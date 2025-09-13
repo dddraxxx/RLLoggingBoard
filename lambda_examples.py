@@ -35,13 +35,18 @@ def datasource_reward_function(step_data):
 
 def tool_calls_analysis_function(step_data):
     responses = step_data.get('response', [])
-    tool_counts = {'<tool_call>': 0, 'regular': 0}
+    import re
+    tool_call_content_re = re.compile(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>')
+    tool_counts = {'tool_call': 0}
 
     for response in responses:
-        if 'tool_call' in response.lower():
-            tool_counts['tool_call'] += 1
-        else:
-            tool_counts['regular'] += 1
+        tool_call_content = tool_call_content_re.findall(response)
+        if tool_call_content:
+            for tool_call in tool_call_content:
+                tool_counts['tool_call'] += 1
+
+    for t in tool_counts:
+        tool_counts[t] = tool_counts[t] / len(responses)
 
     return tool_counts
 
@@ -75,7 +80,7 @@ def docvqa_aug_tool_call_rate_function(step_data):
     from collections import defaultdict
     import re
     # inside <tool_call>...</tool_call>
-    tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    tool_call_content_re = re.compile(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>')
     tool_counts = defaultdict(int)
     source_counts = 0
     for ability, datasource, response in zip(step_data['ability'], step_data['data_source'], responses):
@@ -98,7 +103,7 @@ def docvqa_non_aug_tool_call_rate_function(step_data):
     from collections import defaultdict
     import re
     # inside <tool_call>...</tool_call>
-    tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    tool_call_content_re = re.compile(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>')
     tool_counts = defaultdict(int)
     source_counts = 0
     for ability, datasource, response in zip(step_data['ability'], step_data['data_source'], responses):
@@ -113,13 +118,13 @@ def docvqa_non_aug_tool_call_rate_function(step_data):
                         tool_counts[tool] += 1
     return {k: tool_counts[k]/source_counts for k in tool_counts}
 
-def tool_use_percent_function(step_data):
+def each_tool_avg_count_function(step_data):
     tools = ['image_mark_points', 'image_zoom_in', 'image_draw_line', 'draw_horizontal_line', 'draw_vertical_line', 'image_rotate', 'image_flip']
     responses = step_data.get('response', [])
     from collections import defaultdict
     import re
     # inside <tool_call>...</tool_call>
-    tool_call_content_re = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    tool_call_content_re = re.compile(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>')
     tool_counts = defaultdict(int)
     for response in responses:
         tool_call_content = tool_call_content_re.findall(response)
@@ -155,13 +160,13 @@ def conversation_turns_function(step_data):
 
 LAMBDA_EXAMPLES = [
     ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
-    ("Tool use percent", inspect.getsource(tool_use_percent_function)),
     ("Conversation turns count", inspect.getsource(conversation_turns_function)),
+    ("Tool call count", inspect.getsource(tool_calls_analysis_function)),
+    ("Tool use percent", inspect.getsource(each_tool_avg_count_function)),
     ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
     ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
     ("Datasource reward", inspect.getsource(datasource_reward_function)),
     ("Datasource count", inspect.getsource(datasource_count_function)),
-    ("Tool usage analysis", inspect.getsource(tool_calls_analysis_function)),
     ("Docvqa aug tool call rate", inspect.getsource(docvqa_aug_tool_call_rate_function)),
     ("Docvqa non aug tool call rate", inspect.getsource(docvqa_non_aug_tool_call_rate_function)),
 ]
