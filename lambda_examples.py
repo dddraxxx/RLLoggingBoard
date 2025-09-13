@@ -131,9 +131,32 @@ def tool_use_percent_function(step_data):
     total_cases = len(responses)
     return {k: tool_counts[k]/total_cases for k in tool_counts}
 
+def conversation_turns_function(step_data):
+    responses = step_data.get('response', [])
+    turn_counts = []
+
+    for response in responses:
+        if isinstance(response, str):
+            user_count = response.count('<|im_start|>user')
+            assistant_count = response.count('<|im_end|>assistant')
+            # Count complete pairs
+            turns = user_count + assistant_count
+            turn_counts.append(turns)
+        else:
+            turn_counts.append(0)
+
+    if not turn_counts:
+        return {'max_turns': 0, 'avg_turns': 0}
+
+    return {
+        'max_turns': max(turn_counts),
+        'avg_turns': sum(turn_counts) / len(turn_counts)
+    }
+
 LAMBDA_EXAMPLES = [
     ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
     ("Tool use percent", inspect.getsource(tool_use_percent_function)),
+    ("Conversation turns count", inspect.getsource(conversation_turns_function)),
     ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
     ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
     ("Datasource reward", inspect.getsource(datasource_reward_function)),

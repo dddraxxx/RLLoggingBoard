@@ -437,7 +437,7 @@ def load_log_file(
         'valid_reward', 'ref_valid_reward', 'response_tokens_len',
         'ground_truth', 'image_path', 'processed_images'
     ]
-    
+
     for step in st.session_state['logging_data']:
         for key in required_keys:
             if key not in st.session_state['logging_data'][step]:
@@ -570,13 +570,13 @@ def get_log_directories(base_root_path):
         list: List of log directory paths
     """
     start_time = time.time()
-    
+
     # Use the optimized function from fast_file_search module
     all_log_path_in_logdir = find_log_directories(base_root_path)
-    
+
     elapsed_time = time.time() - start_time
     print(f"Time taken to scan log directories: {elapsed_time:.2f} seconds")
-    
+
     return all_log_path_in_logdir  # Already sorted and deduplicated
 
 
@@ -604,6 +604,18 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
         st.session_state.selected_log_index = len(all_log_paths) - 1
 
     with st.sidebar.expander("📁 Choose Different Log Directory", expanded=True):
+        # Show current full path at the top
+        current_log = all_log_paths[st.session_state.selected_log_index]
+        full_current_path = os.path.join(base_root_path, current_log)
+        st.success(f"`{full_current_path}`")
+
+        # Load & View button at the top
+        load_btn = st.button(
+            "Load & View",
+            use_container_width=True,
+            key="load_btn_top"
+        )
+
         st.markdown(f"**Available Logs ({len(all_log_paths)} found):**")
 
         # Create formatted options - cached for performance
@@ -625,13 +637,7 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
         preview_path = os.path.join(base_root_path, all_log_paths[selected_option_index])
         st.caption(f"**Preview:** `{preview_path}`")
 
-    # Use the CURRENT selection (from radio button) for immediate path display
-    current_log = all_log_paths[selected_option_index]
-    full_current_path = os.path.join(base_root_path, current_log)
-
-    st.sidebar.success(f"`{full_current_path}`")
-
-    return all_log_paths[selected_option_index]
+    return all_log_paths[selected_option_index], load_btn
 
 
 log_file_path = None
@@ -672,12 +678,7 @@ Base Log Dir
         st.stop()
 
     # Use the improved log selector
-    log_name = create_log_selector(all_log_path_in_logdir, base_root_path)
-
-    load_btn = st.sidebar.button(
-        "Load & View",
-        use_container_width=True
-    )
+    log_name, load_btn = create_log_selector(all_log_path_in_logdir, base_root_path)
 
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
@@ -840,7 +841,7 @@ def main_page():
                 steps, reward, ref_reward, valid_reward, ref_valid_reward = [], [], [], [], []
                 for step, value_dict in st.session_state['logging_data'].items():
                     steps.append(step)
-                    
+
                     # Check if 'reward' exists and append
                     if 'reward' in value_dict:
                         reward.append(value_dict['reward'])
@@ -986,7 +987,7 @@ def main_page():
                                 for result in func_results:
                                     if isinstance(result, dict):
                                         group_keys.update(result.keys())
-                                
+
                                 for group_key in group_keys:
                                     group_y_data = []
                                     for result in func_results:
