@@ -527,35 +527,24 @@ def plot_filled_line(
 def format_log_name(log_path, max_length=40):
     """
     Format log path for better display in selector.
+    Shows first two path components followed by ... if there are more.
 
     Args:
         log_path (str): Original log path
-        max_length (int): Maximum display length
+        max_length (int): Maximum display length (not used in new implementation)
 
     Returns:
         str: Formatted log name for display
     """
-    if len(log_path) <= max_length:
-        return log_path
-
-    # Split path and keep important parts
+    # Split path into components
     parts = log_path.split('/')
+
+    # If 2 or fewer parts, return as is
     if len(parts) <= 2:
         return log_path
 
-    # Keep first and last parts, truncate middle
-    first_part = parts[0]
-    last_part = parts[-1]
-
-    if len(first_part) + len(last_part) + 5 <= max_length:  # 5 for ".../"
-        return f"{first_part}/.../{last_part}"
-    else:
-        # If still too long, truncate the last part
-        available_length = max_length - len(first_part) - 5
-        if available_length > 10:
-            return f"{first_part}/.../{last_part[:available_length-3]}..."
-        else:
-            return f".../{last_part}"
+    # Show first two components with ... if there are more
+    return f"{parts[0]}/{parts[1]}/..."
 
 
 @st.cache_data
@@ -618,7 +607,7 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
 
         st.markdown(f"**Available Logs ({len(all_log_paths)} found):**")
 
-        # Create formatted options - cached for performance
+        # Create formatted options - show first two components with ... for longer paths
         formatted_options = [f"{i+1:2d}. {format_log_name(log_path)}" for i, log_path in enumerate(all_log_paths)]
 
         # Radio button selection - this gives us the CURRENT selection immediately
