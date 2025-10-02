@@ -1,5 +1,7 @@
 {
   "common_filters": [
+    "processed_images.str.len() > 4",
+    "response.str.contains('</think>\\s*<answer>', regex=True, case=False, na=False)",
     "response.str.contains('<tool_call>', case=False, na=False)",
     "response.str.contains('\"image_mark_points_tool\"', case=False, na=False)",
     "response.str.contains('\"image_zoom_in_tool\"', case=False, na=False)",

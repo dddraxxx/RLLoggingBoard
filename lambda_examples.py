@@ -136,31 +136,77 @@ def each_tool_avg_count_function(step_data):
     total_cases = len(responses)
     return {k: tool_counts[k]/total_cases for k in tool_counts}
 
-def conversation_turns_function(step_data):
+def valid_tool_use_count_function(step_data):
     responses = step_data.get('response', [])
     turn_counts = []
 
     for response in responses:
         if isinstance(response, str):
-            user_count = response.count('<|im_start|>user')
-            assistant_count = response.count('<|im_end|>assistant')
+            import re
+            pattern = re.compile(r'</tool_response><\|im_end\|>\s*<\|im_start\|>assistant')
             # Count complete pairs
-            turns = user_count + assistant_count
+            matches = pattern.findall(response)
+            turns = len(matches)
             turn_counts.append(turns)
         else:
             turn_counts.append(0)
 
     if not turn_counts:
-        return {'max_turns': 0, 'avg_turns': 0}
+        return {'max': 0, 'avg': 0}
 
     return {
-        'max_turns': max(turn_counts),
-        'avg_turns': sum(turn_counts) / len(turn_counts)
+        'max': max(turn_counts),
+        'avg': sum(turn_counts) / len(turn_counts)
+    }
+
+def assertion_error_count_function(step_data):
+    responses = step_data.get('response', [])
+    assertion_error_count = 0
+    total_responses = len(responses)
+
+    max_assertion_error_count = 0
+    for response in responses:
+        if isinstance(response, str) and 'assertionerror' in response.lower():
+            assertion_error_count += response.lower().count('assertionerror')
+            max_assertion_error_count = max(max_assertion_error_count, response.lower().count('assertionerror'))
+
+    return {
+        'avg': assertion_error_count / total_responses if total_responses > 0 else -1,
+        'max': max_assertion_error_count
+    }
+
+def answer_tag_count_function(step_data):
+    responses = step_data.get('response', [])
+    answer_count = 0
+    total_responses = len(responses)
+    import re
+    for response in responses:
+        think_answer_pattern = re.compile(r'</think>\s*<answer>', re.DOTALL)
+        if isinstance(response, str) and think_answer_pattern.search(response):
+            answer_count += 1
+    return {
+        'answer_rate': answer_count / total_responses if total_responses > 0 else -1
+    }
+
+def tool_error_penalty_applied_function(step_data):
+    tool_error_penalty_applied = step_data.get('tool_error_penalty_applied', 0.0)
+    return {
+        'tool_error_penalty_applied': tool_error_penalty_applied
+    }
+
+def acc_reward_function(step_data):
+    acc_reward = step_data.get('acc_reward', 0.0)
+    return {
+        'acc_reward': acc_reward
     }
 
 LAMBDA_EXAMPLES = [
+    ["Acc reward", inspect.getsource(acc_reward_function)],
+    ("Tool error penalty applied", inspect.getsource(tool_error_penalty_applied_function)),
+    ("Valid tool use count", inspect.getsource(valid_tool_use_count_function)),
+    ("Answer tag count", inspect.getsource(answer_tag_count_function)),
+    ("Assertion error count", inspect.getsource(assertion_error_count_function)),
     ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
-    ("Conversation turns count", inspect.getsource(conversation_turns_function)),
     ("Tool call count", inspect.getsource(tool_calls_analysis_function)),
     ("Tool use percent", inspect.getsource(each_tool_avg_count_function)),
     ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),

@@ -31,7 +31,7 @@ import re
 
 import orjson as json
 from fast_jsonl_reader import read_jsonl_parallel
-from fast_file_search import find_log_files, find_log_directories
+from fast_file_search import find_log_files
 
 
 import numpy as np
@@ -272,7 +272,8 @@ def load_log_file(
     max_samples_each_step: int,
     step_freq: int,
     start_step: int,
-    end_step: int
+    end_step: int,
+    pre_scanned_files=None
 ):
     """
     解析本地log文件。
@@ -292,10 +293,13 @@ def load_log_file(
     st.session_state['logging_data'] = {}
     error_lines, success_lines = 0, 0
 
-    # Use parallel file discovery for faster scanning
+    # Use pre-scanned files if provided to avoid a second filesystem scan
     print(f"Scanning for log files in {logdir}...")
     scan_start = time.time()
-    all_logs = find_log_files(logdir)  # Uses fast parallel search from fast_file_search module
+    if pre_scanned_files is not None:
+        all_logs = pre_scanned_files
+    else:
+        all_logs = find_log_files(logdir)  # Uses fast parallel search from fast_file_search module
     scan_time = time.time() - scan_start
     print(f"Found {len(all_logs)} log files in {scan_time:.2f} seconds")
 
@@ -445,6 +449,10 @@ def load_log_file(
 
     rewards_dict = {'step': [], 'reward': [], 'ref_reward': []}
     for step in st.session_state['logging_data']:
+        for idx, reward in enumerate(st.session_state['logging_data'][step]['reward']):
+            if isinstance(reward, list):
+                st.session_state['logging_data'][step]['reward'][idx] = sum(reward)
+
         st.session_state['logging_data'][step]['avg_reward'] = sum(st.session_state['logging_data'][step]['reward']) / len(st.session_state['logging_data'][step]['reward'])
 
         current_step_resp_length = [len(resp) for resp in st.session_state['logging_data'][step]['response']]
@@ -556,17 +564,31 @@ def get_log_directories(base_root_path):
         base_root_path (str): Base directory to scan
 
     Returns:
-        list: List of log directory paths
+        tuple: (list of log directory paths, dict mapping dir->list of relative file paths)
     """
     start_time = time.time()
 
-    # Use the optimized function from fast_file_search module
-    all_log_path_in_logdir = find_log_directories(base_root_path)
+    # Scan once for all files, then derive directories and per-dir file lists
+    all_files_rel_to_root = find_log_files(base_root_path)
+
+    directories_set = set()
+    dir_to_files = {}
+    for rel_path in all_files_rel_to_root:
+        parent_dir = os.path.dirname(rel_path) if os.path.dirname(rel_path) else '.'
+        directories_set.add(parent_dir)
+
+        # Make file path relative to its parent_dir (usually just the filename)
+        rel_in_dir = os.path.relpath(rel_path, parent_dir) if parent_dir != '.' else os.path.basename(rel_path)
+        if parent_dir not in dir_to_files:
+            dir_to_files[parent_dir] = []
+        dir_to_files[parent_dir].append(rel_in_dir)
+
+    all_log_path_in_logdir = sorted(list(directories_set))
 
     elapsed_time = time.time() - start_time
     print(f"Time taken to scan log directories: {elapsed_time:.2f} seconds")
 
-    return all_log_path_in_logdir  # Already sorted and deduplicated
+    return all_log_path_in_logdir, dir_to_files
 
 
 def create_log_selector(all_log_paths, base_root_path, current_selection=None):
@@ -651,8 +673,8 @@ def init_sidebar():
         st.warning(f'Log(s) Root Path: `{base_root_path}` is not exists.', icon='⚠️')
         st.stop()
 
-        # Use cached function for directory scanning - much faster on reruns
-    all_log_path_in_logdir = get_log_directories(base_root_path)
+    # Use cached function for directory scanning - much faster on reruns
+    all_log_path_in_logdir, dir_to_files_map = get_log_directories(base_root_path)
 
     if not all_log_path_in_logdir:
         st.warning('No log files found.')
@@ -716,7 +738,8 @@ Base Log Dir
             max_samples_each_step,
             step_freq,
             start_step,
-            end_step
+            end_step,
+            pre_scanned_files=dir_to_files_map.get(log_name)
         )
     log_file_path = os.path.join(base_root_path, log_name)
 
