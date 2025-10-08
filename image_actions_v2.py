@@ -25,6 +25,36 @@ sys.path.append(os.path.join(verl_path, "workers", "agent", "envs", "mm_process_
 from point_toolbox_v6 import PointToolBoxV6
 
 
+def resize_image_max_edge(image: Image.Image, max_edge: int = 200) -> Image.Image:
+    """Resize image so that the maximum edge is max_edge pixels, maintaining aspect ratio.
+    
+    Args:
+        image: PIL Image object
+        max_edge: Maximum edge length in pixels
+        
+    Returns:
+        Resized PIL Image object
+    """
+    width, height = image.size
+    
+    # If both edges are already smaller than max_edge, return original
+    if width <= max_edge and height <= max_edge:
+        return image
+    
+    # Calculate scaling factor
+    if width > height:
+        scale = max_edge / width
+    else:
+        scale = max_edge / height
+    
+    # Calculate new dimensions
+    new_width = int(width * scale)
+    new_height = int(height * scale)
+    
+    # Resize image using high-quality downsampling
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
 class ImageProcessorV2:
     """Unified image processor using PointToolBoxV6 for consistent tool execution."""
 
@@ -228,12 +258,13 @@ class ImageProcessorV2:
             return f"{tool_name.replace('_', ' ').title()} {step}"
 
 
-def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int):
+def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int, max_edge: int = 200):
     """Display processed images from JSONL data.
 
     Args:
         processed_images: List of processed image entries from JSONL
         images_per_row: Number of images to display per row
+        max_edge: Maximum edge length for resizing images (default: 200)
     """
     if not processed_images:
         st.info("No processed images to display.")
@@ -266,9 +297,26 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
     for i, img in enumerate(processed_imgs):
         if os.path.exists(img['path']):
             tool_name = img['tool'].replace('_', ' ').title()
+
+            # Check for label in tool arguments for zoom-in tools
+            if img['tool'] == 'image_zoom_in_tool':
+                label = img.get('label', '')  # Get label from stored tool arguments
+                if label:
+                    caption = f"Step {i+1}: {label}"
+                else:
+                    # Fallback to bbox coordinates if no label
+                    bbox = img.get('bbox_2d', [])
+                    if len(bbox) >= 4:
+                        caption = f"Step {i+1}: [{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}]"
+                    else:
+                        caption = f"Step {i+1}: {tool_name}"
+            else:
+                # For non-zoom tools, use the original format
+                caption = f"Step {i+1}: {tool_name}"
+
             display_images.append({
                 'path': img['path'],
-                'caption': f"Step {i+1}: {tool_name}",
+                'caption': caption,
                 'tool': img['tool']
             })
         else:
@@ -290,6 +338,8 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
                 with cols[j]:
                     try:
                         image = Image.open(img_info['path'])
+                        # Resize image for faster web loading
+                        image = resize_image_max_edge(image, max_edge=max_edge)
                         st.image(image, caption=img_info['caption'], use_container_width=True)
                     except Exception as e:
                         st.error(f"Error loading {img_info['caption']}: {e}")
@@ -320,15 +370,14 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
         and all(isinstance(item, dict) and 'tool' in item and 'path' in item for item in processed_images)
     )
 
-    # Create processor and process the image
-    processor = ImageProcessorV2()
-    result = processor.process_image_with_response(image_path, response_text)
-
-    if not result["success"]:
-        st.error(f"Error processing image: {result['error']}")
+    # Load original image (lightweight operation)
+    try:
+        original_image = Image.open(image_path)
+    except Exception as e:
+        st.error(f"Failed to load image: {e}")
         return
 
-    # Display UI controls
+    # Display UI controls - determine mode first
     with st.expander("🎨 Image Display Options", expanded=True):
         # Choose display mode
         if has_processed_images:
@@ -352,15 +401,6 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
             help="Display the original image before processed results"
         )
 
-        if not use_processed_images:
-            chain_actions = st.checkbox(
-                "Chain actions",
-                value=False,
-                help="Apply each action to the result of the previous action instead of the original image"
-            )
-        else:
-            chain_actions = False  # Not applicable for processed images
-
         images_per_row = st.slider(
             "Images per row",
             min_value=1,
@@ -369,25 +409,48 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
             help="Number of images to display per row"
         )
 
+        max_edge = st.slider(
+            "Maximum image size (pixels)",
+            min_value=100,
+            max_value=1000,
+            value=200,
+            step=50,
+            help="Maximum edge length for resizing images (larger = higher quality but slower loading)"
+        )
+
+        # Only show these controls if NOT using processed images
         if not use_processed_images:
+            chain_actions = st.checkbox(
+                "Chain actions",
+                value=False,
+                help="Apply each action to the result of the previous action instead of the original image"
+            )
             show_errors = st.checkbox(
                 "Show error details",
                 value=False,
                 help="Display detailed error information for failed tool calls"
             )
         else:
+            chain_actions = False  # Not applicable for processed images
             show_errors = False  # Not applicable for processed images
 
     # Show original image if requested
     if show_original:
         st.markdown("**Original Image**")
-        st.image(result["original_image"], use_container_width=True)
-        if result["processed_steps"] or use_processed_images:
-            st.divider()
+        st.image(original_image, use_container_width=True)
+        st.divider()
 
-    # Handle processed images mode
+    # OPTIMIZATION: Early return for processed images path - skip toolbox entirely!
     if use_processed_images and has_processed_images:
-        display_processed_images_from_jsonl(processed_images, images_per_row)
+        display_processed_images_from_jsonl(processed_images, images_per_row, max_edge)
+        return
+
+    # Only create processor and process when actually needed (NOT using processed_images)
+    processor = ImageProcessorV2()
+    result = processor.process_image_with_response(image_path, response_text)
+
+    if not result["success"]:
+        st.error(f"Error processing image: {result['error']}")
         return
 
     # Process and display results

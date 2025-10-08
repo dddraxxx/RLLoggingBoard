@@ -1507,7 +1507,7 @@ ground_truth.notna()
                             raw_slider_value = st.slider(
                                 f'Sample index (snaps to filtered samples: {len(filtered_indices)} available):',
                                 min_value=min_idx,
-                                max_value=max_idx,
+                                max_value=max_idx+1,
                                 value=st.session_state.snapped_sample_index,
                                 key="filtered_sample_slider"
                             )
