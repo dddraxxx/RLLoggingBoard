@@ -22,6 +22,19 @@ def get_color_for_value(value, metric_name):
         else:
             return "#FFB6C6"
 
+    # For probabilities: closer to 1 is better
+    elif 'prob' in metric_name.lower():
+        if value is None:
+            return "#CCCCCC"
+        if value >= 0.8:
+            return "#90EE90"
+        elif value >= 0.5:
+            return "#FFFFE0"
+        elif value >= 0.2:
+            return "#FFD700"
+        else:
+            return "#FFB6C6"
+
     # For rewards: positive is good
     elif 'reward' in metric_name.lower():
         if value > 0.3:
@@ -68,17 +81,23 @@ def display_colored_tokens(tokens, logprobs):
     metric_name = "LogProb"
     values = logprobs
 
-    # Normalize values for bar heights (0-100px)
-    values_array = np.array([v if v is not None else 0 for v in values])
+    # Normalize values for bar heights with tighter range to reduce variance
+    values_array = np.array([v if v is not None else 0 for v in values], dtype=float)
     if len(values_array) > 0:
         val_min = values_array.min()
         val_max = values_array.max()
         if val_max != val_min:
-            normalized = ((values_array - val_min) / (val_max - val_min)) * 80 + 10
+            normalized = (values_array - val_min) / (val_max - val_min)
         else:
-            normalized = [45] * len(values_array)
+            normalized = np.full(len(values_array), 0.5)
     else:
-        normalized = [45] * len(values)
+        normalized = np.zeros(len(values))
+
+    normalized = np.clip(normalized, 0.0, 1.0)
+
+    # Convert normalized values to pixel heights with smaller range
+    min_height, max_height = 25, 45
+    bar_heights = normalized * (max_height - min_height) + min_height
 
     # Build complete HTML document
     html = '''
@@ -93,23 +112,17 @@ def display_colored_tokens(tokens, logprobs):
                 font-family: 'Segoe UI', Arial, sans-serif;
             }
             .token-container {
-                line-height: 1.8;
+                line-height: 1.6;
                 font-size: 14px;
+                word-wrap: break-word;
             }
             .token-wrapper {
-                display: inline-block;
-                margin: 0 1px;
-                text-align: center;
-                vertical-align: bottom;
-            }
-            .token-bar {
-                width: 4px;
-                margin: 0 auto 2px auto;
+                display: inline;
             }
             .token-text {
-                padding: 2px 4px;
-                border-radius: 2px;
-                white-space: nowrap;
+                padding: 1px 2px;
+                border-radius: 3px;
+                white-space: pre-wrap;
             }
             .legend-container {
                 margin-bottom: 15px;
@@ -170,15 +183,19 @@ def display_colored_tokens(tokens, logprobs):
     for i, (token, value) in enumerate(zip(tokens, values)):
         color = get_color_for_value(value, metric_name)
         value_str = f"{value:.3f}" if value is not None else "N/A"
-        bar_height = normalized[i]
+        bar_height = bar_heights[i]
+        normalized_value = normalized[i]
 
-        # Escape HTML in token
-        token_escaped = str(token).replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
+        # Escape HTML characters in token text
+        token_text = str(token).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+        # Build tooltip and escape for HTML attribute
+        tooltip = f"{metric_name}: {value_str} | Normalized: {normalized_value:.2f}"
+        tooltip_escaped = tooltip.replace('"', '&quot;')
 
         html += f'''
-        <span class="token-wrapper" title="{metric_name}: {value_str}">
-            <div class="token-bar" style="height: {bar_height}px; background-color: {color};"></div>
-            <span class="token-text" style="background-color: {color};">{token_escaped}</span>
+        <span class="token-wrapper" title="{tooltip_escaped}">
+            <span class="token-text" style="background-color: {color};">{token_text}</span>
         </span>
         '''
 
@@ -188,14 +205,13 @@ def display_colored_tokens(tokens, logprobs):
     </html>
     '''
 
-    # Calculate height based on number of tokens and bar height
-    # Estimate number of rows needed (assume ~10-15 tokens per row with wrapping)
-    estimated_rows = max(3, len(tokens) // 12)
-    row_height = int(max(normalized) + 30)  # bar height + text height
-    legend_height = 80  # Height for the legend
-    display_height = min(600, estimated_rows * row_height + legend_height)  # Cap at 600px
+    # Calculate height to show all content without scrolling
+    estimated_rows = max(3, len(tokens) // 15)
+    row_height = 30  # text height + padding
+    legend_height = 100  # Height for the legend
+    display_height = estimated_rows * row_height + legend_height
 
-    components.html(html, height=display_height, scrolling=True)
+    components.html(html, height=display_height, scrolling=False)
 
 
 # Test section

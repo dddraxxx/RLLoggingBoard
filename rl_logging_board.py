@@ -51,6 +51,9 @@ from image_actions_v2 import (
 #     display_image_with_actions,
 # )
 
+# Import token visualization
+from token_viz import display_colored_tokens
+
 
 st.set_page_config(
     page_title="RL Logging Board",
@@ -577,11 +580,11 @@ def get_log_directories(base_root_path):
         parent_dir = os.path.dirname(rel_path) if os.path.dirname(rel_path) else '.'
         directories_set.add(parent_dir)
 
-        # Make file path relative to its parent_dir (usually just the filename)
-        rel_in_dir = os.path.relpath(rel_path, parent_dir) if parent_dir != '.' else os.path.basename(rel_path)
+        # Store just the filename (not the relative path)
+        filename = os.path.basename(rel_path)
         if parent_dir not in dir_to_files:
             dir_to_files[parent_dir] = []
-        dir_to_files[parent_dir].append(rel_in_dir)
+        dir_to_files[parent_dir].append(filename)
 
     all_log_path_in_logdir = sorted(list(directories_set))
 
@@ -591,20 +594,21 @@ def get_log_directories(base_root_path):
     return all_log_path_in_logdir, dir_to_files
 
 
-def create_log_selector(all_log_paths, base_root_path, current_selection=None):
+def create_log_selector(all_log_paths, base_root_path, dir_to_files_map, current_selection=None):
     """
     Create an improved log selector with expandable interface.
 
     Args:
         all_log_paths (list): List of available log paths
         base_root_path (str): Base root path for constructing full paths
+        dir_to_files_map (dict): Mapping from directory to list of files
         current_selection (str): Currently selected log path
 
     Returns:
-        str: Selected log path
+        tuple: (selected_log_path, selected_files, load_btn)
     """
     if not all_log_paths:
-        return None
+        return None, None, False
 
     # Initialize session state for log selector if not exists
     if 'selected_log_index' not in st.session_state:
@@ -627,7 +631,49 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
             key="load_btn_top"
         )
 
-        st.markdown(f"**Available Logs ({len(all_log_paths)} found):**")
+        # Get current selection for file display
+        selected_option_index = st.session_state.selected_log_index
+        selected_dir = all_log_paths[selected_option_index]
+        available_files = dir_to_files_map.get(selected_dir, [])
+
+        # MOVED UP: File selection within the chosen directory
+        st.markdown("---")
+        st.markdown("**📄 Select File(s) to Load:**")
+        st.caption(f"📊 {len(available_files)} file(s) in selected directory")
+
+        if available_files:
+            # Allow multi-selection of files within the directory (default to all)
+            sanitized_dir_key = re.sub(r'[^0-9a-zA-Z_]', '_', selected_dir)
+            widget_key = f"file_selector_{sanitized_dir_key}"
+
+            # Display full filenames without truncation
+            selected_files = st.multiselect(
+                "Choose files:",
+                options=available_files,
+                default=available_files,
+                key=widget_key,
+                label_visibility="collapsed",
+                help="Select one or more files to load from this directory"
+            )
+
+            if selected_files:
+                # Preserve the original ordering from available_files
+                selected_files = [f for f in available_files if f in selected_files]
+                # Show selected files for clarity
+                if len(selected_files) > 0:
+                    st.caption(f"✅ {len(selected_files)} file(s) selected")
+                    for f in selected_files:
+                        st.caption(f"  • {f}")
+            else:
+                st.warning("No files selected")
+                selected_files = []
+        else:
+            st.warning("No files found in this directory")
+            selected_files = []
+
+        # Directory selection moved below file selection
+        st.markdown("---")
+        st.markdown(f"**Available Log Directories ({len(all_log_paths)} found):**")
 
         # Create formatted options - show first two components with ... for longer paths
         formatted_options = [f"{i+1:2d}. {format_log_name(log_path)}" for i, log_path in enumerate(all_log_paths)]
@@ -638,17 +684,18 @@ def create_log_selector(all_log_paths, base_root_path, current_selection=None):
             range(len(all_log_paths)),
             index=st.session_state.selected_log_index,
             format_func=lambda x: formatted_options[x],
-            key="log_selector_radio"
+            key="log_selector_radio",
+            label_visibility="collapsed"
         )
 
         # Update session state - no explicit rerun needed, Streamlit handles it
         st.session_state.selected_log_index = selected_option_index
 
-        # Show preview of selected path
+        # Show preview of selected path at bottom
         preview_path = os.path.join(base_root_path, all_log_paths[selected_option_index])
         st.caption(f"**Preview:** `{preview_path}`")
 
-    return all_log_paths[selected_option_index], load_btn
+    return all_log_paths[selected_option_index], selected_files, load_btn
 
 
 log_file_path = None
@@ -689,7 +736,7 @@ Base Log Dir
         st.stop()
 
     # Use the improved log selector
-    log_name, load_btn = create_log_selector(all_log_path_in_logdir, base_root_path)
+    log_name, selected_files, load_btn = create_log_selector(all_log_path_in_logdir, base_root_path, dir_to_files_map)
 
     max_samples_each_step = st.sidebar.number_input(
         'Max Samples Each Step',
@@ -732,14 +779,24 @@ Base Log Dir
         start_step != st.session_state.get('start_step', -1)
         or
         end_step != st.session_state.get('end_step', -1)
+        or
+        selected_files != st.session_state.get('selected_files', None)
     ):
+        # Check if files are selected
+        if not selected_files:
+            st.error("⚠️ No files selected. Please select a file to load.")
+            st.stop()
+
+        # Store selected files in session state
+        st.session_state['selected_files'] = selected_files
+
         load_log_file(
             os.path.join(base_root_path, log_name),
             max_samples_each_step,
             step_freq,
             start_step,
             end_step,
-            pre_scanned_files=dir_to_files_map.get(log_name)
+            pre_scanned_files=selected_files  # Pass only selected files
         )
     log_file_path = os.path.join(base_root_path, log_name)
 
@@ -758,6 +815,7 @@ Base Log Dir
         st.session_state['show_charts'] = st.checkbox('Show Charts', value=True)
         st.session_state['show_batch_samples'] = st.checkbox('Show Batch Samples', value=True)
         st.session_state['show_samples_pair'] = st.checkbox('Show Samples Pair', value=True)
+        st.session_state['show_token_detail_table'] = st.checkbox('Show Detailed Token Table', value=False)
         st.session_state['show_token_heat_map'] = st.checkbox('Show Heat Map', value=False)
 
 def plot_filled_line(
@@ -1687,6 +1745,25 @@ ground_truth.notna()
                     and sample_index < len(cur_step_filtered_content_dict['token_rewards'])
                     and cur_step_filtered_content_dict['token_rewards'][sample_index] is not None):
 
+                    # Flatten function to handle nested arrays [[x,x,x]] -> [x,x,x]
+                    def flatten_if_needed(data):
+                        """Flatten data if it's [[x,x,x]] to [x,x,x]"""
+                        if data is None:
+                            return data
+                        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], list):
+                            return data[0]
+                        return data
+
+                    # Apply flatten to all token-level arrays used in show_values
+                    token_level_keys = ['token_rewards', 'log_ratio', 'kl', 'values', 'logprobs', 'ref_logprobs', 'probs', 'ref_probs']
+                    for key in token_level_keys:
+                        if (cur_step_filtered_content_dict.get(key)
+                            and sample_index < len(cur_step_filtered_content_dict[key])
+                            and cur_step_filtered_content_dict[key][sample_index] is not None):
+                            cur_step_filtered_content_dict[key][sample_index] = flatten_if_needed(
+                                cur_step_filtered_content_dict[key][sample_index]
+                            )
+
                     # 检查 resp_tokens 的长度和 logprobs 的长度是否对齐
                     resp_token_len = len(cur_step_filtered_content_dict['response_tokens'][sample_index])
 
@@ -1811,10 +1888,22 @@ ground_truth.notna()
                             inplace=True
                         )
 
-                        st.dataframe(
-                            token_level_df.style.background_gradient(axis=1, cmap="binary"),
-                            use_container_width=True
-                        )
+                        # NEW: Display colored token visualization with logprobs
+                        if (cur_step_filtered_content_dict.get('logprobs')
+                            and sample_index < len(cur_step_filtered_content_dict['logprobs'])
+                            and cur_step_filtered_content_dict['logprobs'][sample_index] is not None):
+                            display_colored_tokens(
+                                response_tokens_without_pad_token,
+                                cur_step_filtered_content_dict['logprobs'][sample_index]
+                            )
+
+                        # EXISTING: Detailed Table (only show if enabled)
+                        if st.session_state.get('show_token_detail_table', False):
+                            st.markdown("**📊 Detailed Token-Level Table**")
+                            st.dataframe(
+                                token_level_df.style.background_gradient(axis=1, cmap="binary"),
+                                use_container_width=True
+                            )
 
                         if st.session_state['show_token_heat_map']:
                             fig = px.imshow(
