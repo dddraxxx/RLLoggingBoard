@@ -27,30 +27,30 @@ from point_toolbox_v6 import PointToolBoxV6
 
 def resize_image_max_edge(image: Image.Image, max_edge: int = 200) -> Image.Image:
     """Resize image so that the maximum edge is max_edge pixels, maintaining aspect ratio.
-    
+
     Args:
         image: PIL Image object
         max_edge: Maximum edge length in pixels
-        
+
     Returns:
         Resized PIL Image object
     """
     width, height = image.size
-    
+
     # If both edges are already smaller than max_edge, return original
     if width <= max_edge and height <= max_edge:
         return image
-    
+
     # Calculate scaling factor
     if width > height:
         scale = max_edge / width
     else:
         scale = max_edge / height
-    
+
     # Calculate new dimensions
     new_width = int(width * scale)
     new_height = int(height * scale)
-    
+
     # Resize image using high-quality downsampling
     return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
@@ -258,13 +258,14 @@ class ImageProcessorV2:
             return f"{tool_name.replace('_', ' ').title()} {step}"
 
 
-def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int, max_edge: int = 200):
+def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int, max_edge: int = 200, show_original: bool = False):
     """Display processed images from JSONL data.
 
     Args:
         processed_images: List of processed image entries from JSONL
         images_per_row: Number of images to display per row
         max_edge: Maximum edge length for resizing images (default: 200)
+        show_original: Whether to display origin images (default: False)
     """
     if not processed_images:
         st.info("No processed images to display.")
@@ -282,16 +283,17 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
     # Prepare images for display
     display_images = []
 
-    # Add origin images first
-    for img in origin_images:
-        if os.path.exists(img['path']):
-            display_images.append({
-                'path': img['path'],
-                'caption': f"Original ({img['tool']})",
-                'tool': img['tool']
-            })
-        else:
-            st.warning(f"Origin image not found: {img['path']}")
+    # Add origin images first only if show_original is True
+    if show_original:
+        for img in origin_images:
+            if os.path.exists(img['path']):
+                display_images.append({
+                    'path': img['path'],
+                    'caption': f"Original ({img['tool']})",
+                    'tool': img['tool']
+                })
+            else:
+                st.warning(f"Origin image not found: {img['path']}")
 
     # Add processed images
     for i, img in enumerate(processed_imgs):
@@ -442,7 +444,7 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
 
     # OPTIMIZATION: Early return for processed images path - skip toolbox entirely!
     if use_processed_images and has_processed_images:
-        display_processed_images_from_jsonl(processed_images, images_per_row, max_edge)
+        display_processed_images_from_jsonl(processed_images, images_per_row, max_edge, show_original)
         return
 
     # Only create processor and process when actually needed (NOT using processed_images)

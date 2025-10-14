@@ -195,17 +195,28 @@ def find_directories_with_files(
     return sorted(list(directories))
 
 
-
-
 # Convenience functions for common use cases
 def find_log_files(base_path: str, workers: Optional[int] = None) -> List[str]:
-    """Find all _rank0.jsonl log files in a directory tree."""
-    return find_files_parallel(base_path, '_rank0.jsonl', workers)
+    """Find all jsonl log files whose filenames contain '_rank0'."""
+    all_jsonl_files = find_files_parallel(base_path, '.jsonl', workers)
+    return [
+        file_path
+        for file_path in all_jsonl_files
+        if '_rank0' in os.path.basename(file_path)
+    ]
 
 
 def find_log_directories(base_path: str, workers: Optional[int] = None) -> List[str]:
-    """Find all directories containing _rank0.jsonl log files."""
-    return find_directories_with_files(base_path, '_rank0.jsonl', workers)
+    """Find directories containing jsonl log files whose filenames include '_rank0'."""
+    matching_files = find_log_files(base_path, workers)
+    directories = set()
+    for file_path in matching_files:
+        parent_dir = os.path.dirname(file_path)
+        if parent_dir:
+            directories.add(parent_dir)
+        else:
+            directories.add('.')
+    return sorted(directories)
 
 
 if __name__ == "__main__":

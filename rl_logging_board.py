@@ -1635,6 +1635,89 @@ ground_truth.notna()
                     format_func=lambda x: available_columns[x]['label']
                 )
 
+                sample_image_original_path = None
+                sample_image_resolved_path = None
+
+                if (
+                    "image_path" in cur_step_filtered_content_dict
+                    and
+                    cur_step_filtered_content_dict["image_path"]
+                    and
+                    sample_index < len(cur_step_filtered_content_dict["image_path"])
+                ):
+                    sample_image_original_path = cur_step_filtered_content_dict["image_path"][sample_index]
+                    candidate_path = sample_image_original_path
+
+                    if candidate_path and not os.path.exists(candidate_path):
+                        fallback_path = os.path.join(log_file_path, 'images', os.path.basename(candidate_path))
+                        if os.path.exists(fallback_path):
+                            candidate_path = fallback_path
+                        else:
+                            candidate_path = None
+
+                    if candidate_path and os.path.exists(candidate_path):
+                        sample_image_resolved_path = os.path.abspath(candidate_path)
+
+                if sample_image_original_path:
+                    escaped_original_path = html.escape(sample_image_original_path)
+                    if sample_image_resolved_path and os.path.exists(sample_image_resolved_path):
+                        resolved_uri = Path(sample_image_resolved_path).resolve().as_uri()
+                        with st.expander(f"📁 **Image Path:** `{escaped_original_path}`", expanded=False):
+                            st.markdown(
+                                f'<a href="{resolved_uri}" target="_blank" rel="noopener noreferrer">Open in new tab</a>',
+                                unsafe_allow_html=True
+                            )
+                            try:
+                                img = Image.open(sample_image_resolved_path)
+                                st.image(img, caption="Original Image", use_container_width=True)
+                            except Exception as e:
+                                st.error(f"Failed to load image: {e}")
+                    else:
+                        st.markdown(
+                            f'📁 **Image Path:** <code>{escaped_original_path}</code> (file not found)',
+                            unsafe_allow_html=True
+                        )
+
+                # Display input images from processed_images if available
+                if (
+                    "processed_images" in cur_step_filtered_content_dict
+                    and
+                    cur_step_filtered_content_dict["processed_images"]
+                    and
+                    sample_index < len(cur_step_filtered_content_dict["processed_images"])
+                ):
+                    processed_images_list = cur_step_filtered_content_dict["processed_images"][sample_index]
+                    if processed_images_list and isinstance(processed_images_list, list):
+                        input_images = [img for img in processed_images_list if img.get('tool') == 'input']
+
+                        if input_images:
+                            for i, img_info in enumerate(input_images):
+                                img_path = img_info.get('path', '')
+                                if img_path:
+                                    escaped_input_path = html.escape(img_path)
+
+                                    # Resolve path similar to original image
+                                    resolved_input_path = None
+                                    if os.path.exists(img_path):
+                                        resolved_input_path = os.path.abspath(img_path)
+                                    else:
+                                        fallback_path = os.path.join(log_file_path, 'images', os.path.basename(img_path))
+                                        if os.path.exists(fallback_path):
+                                            resolved_input_path = os.path.abspath(fallback_path)
+
+                                    if resolved_input_path and os.path.exists(resolved_input_path):
+                                        resolved_uri = Path(resolved_input_path).resolve().as_uri()
+                                        with st.expander(f"📥 **Input Image {i+1} (Model Input Resolution):** `{escaped_input_path}`", expanded=False):
+                                            st.markdown(
+                                                f'<a href="{resolved_uri}" target="_blank" rel="noopener noreferrer">Open in new tab</a>',
+                                                unsafe_allow_html=True
+                                            )
+                                            try:
+                                                img = Image.open(resolved_input_path)
+                                                st.image(img, caption=f"Input Image {i+1}", use_container_width=True)
+                                            except Exception as e:
+                                                st.error(f"Failed to load input image: {e}")
+
                 if selected_columns:
                     # Create dynamic columns based on selection
                     column_widths = [available_columns[col]['width'] for col in selected_columns]
@@ -1687,15 +1770,19 @@ ground_truth.notna()
                                         and
                                         sample_index < len(cur_step_filtered_content_dict["image_path"])
                                 ):
-                                    image_path = cur_step_filtered_content_dict["image_path"][sample_index]
-                                    # check if image_path exists here
-                                    if not os.path.exists(image_path):
-                                        # then search in the same directory of log file for image name with .png extension
-                                        image_path = os.path.join(log_file_path, 'images', os.path.basename(image_path))
-                                        # print(image_path)
+                                    image_path = sample_image_resolved_path or cur_step_filtered_content_dict["image_path"][sample_index]
+
+                                    if not image_path:
+                                        st.info('No `image_path` found in log line data.')
+                                        continue
+
+                                    if sample_image_resolved_path is None:
                                         if not os.path.exists(image_path):
-                                            st.info(f'Image path {image_path} does not exist.')
-                                            continue
+                                            # then search in the same directory of log file for image name with .png extension
+                                            image_path = os.path.join(log_file_path, 'images', os.path.basename(image_path))
+                                            if not os.path.exists(image_path):
+                                                st.info(f'Image path {image_path} does not exist.')
+                                                continue
 
                                     # Get processed_images for this sample if available
                                     processed_images = None
