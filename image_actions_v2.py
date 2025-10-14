@@ -9,7 +9,7 @@ import os
 import re
 import json
 import sys
-from typing import List, Tuple, Optional, Dict, Any, Union
+from typing import List, Tuple, Optional, Dict, Any, Union, Sequence
 from PIL import Image
 
 import streamlit as st
@@ -23,6 +23,8 @@ if verl_spec is None:
 verl_path = verl_spec.submodule_search_locations[0]
 sys.path.append(os.path.join(verl_path, "workers", "agent", "envs", "mm_process_engine"))
 from point_toolbox_v6 import PointToolBoxV6
+
+from path_utils import resolve_image_path
 
 
 def resize_image_max_edge(image: Image.Image, max_edge: int = 200) -> Image.Image:
@@ -258,7 +260,15 @@ class ImageProcessorV2:
             return f"{tool_name.replace('_', ' ').title()} {step}"
 
 
-def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], images_per_row: int, max_edge: int = 200, show_original: bool = False):
+def display_processed_images_from_jsonl(
+    processed_images: List[Dict[str, str]],
+    images_per_row: int,
+    max_edge: int = 200,
+    show_original: bool = False,
+    log_dir: Optional[str] = None,
+    search_subdirs: Optional[Sequence[str]] = None,
+    extra_search_paths: Optional[Sequence[str]] = None,
+):
     """Display processed images from JSONL data.
 
     Args:
@@ -286,18 +296,31 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
     # Add origin images first only if show_original is True
     if show_original:
         for img in origin_images:
-            if os.path.exists(img['path']):
+            resolved_path, attempted = resolve_image_path(
+                img.get('path', ''),
+                log_dir=log_dir,
+                search_subdirs=search_subdirs,
+                extra_search_paths=extra_search_paths,
+            )
+            if resolved_path and os.path.exists(resolved_path):
                 display_images.append({
-                    'path': img['path'],
+                    'path': resolved_path,
                     'caption': f"Original ({img['tool']})",
                     'tool': img['tool']
                 })
             else:
-                st.warning(f"Origin image not found: {img['path']}")
+                suffix = f" (checked: {attempted[-1]})" if attempted else ""
+                st.warning(f"Origin image not found: {img.get('path', '')}{suffix}")
 
     # Add processed images
     for i, img in enumerate(processed_imgs):
-        if os.path.exists(img['path']):
+        resolved_path, attempted = resolve_image_path(
+            img.get('path', ''),
+            log_dir=log_dir,
+            search_subdirs=search_subdirs,
+            extra_search_paths=extra_search_paths,
+        )
+        if resolved_path and os.path.exists(resolved_path):
             tool_name = img['tool'].replace('_', ' ').title()
 
             # Check for label in tool arguments for zoom-in tools
@@ -317,12 +340,13 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
                 caption = f"Step {i+1}: {tool_name}"
 
             display_images.append({
-                'path': img['path'],
+                'path': resolved_path,
                 'caption': caption,
                 'tool': img['tool']
             })
         else:
-            st.warning(f"Processed image not found: {img['path']}")
+            suffix = f" (checked: {attempted[-1]})" if attempted else ""
+            st.warning(f"Processed image not found: {img.get('path', '')}{suffix}")
 
     if not display_images:
         st.error("No valid image files found in processed_images paths.")
@@ -347,7 +371,16 @@ def display_processed_images_from_jsonl(processed_images: List[Dict[str, str]], 
                         st.error(f"Error loading {img_info['caption']}: {e}")
 
 
-def display_image_with_actions_v2(image_path: str, response_text: str = "", processed_images: Optional[List[Dict[str, str]]] = None, **kwargs):
+def display_image_with_actions_v2(
+    image_path: str,
+    response_text: str = "",
+    processed_images: Optional[List[Dict[str, str]]] = None,
+    *,
+    log_dir: Optional[str] = None,
+    search_subdirs: Optional[Sequence[str]] = None,
+    extra_search_paths: Optional[Sequence[str]] = None,
+    **kwargs
+):
     """Display image using V2 unified processing with PointToolBoxV6.
 
     Args:
@@ -360,8 +393,21 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
         st.info('No image path provided.')
         return
 
-    if not os.path.exists(image_path):
-        st.info(f'Image not found: {image_path}')
+    effective_image_path = image_path
+    attempted_paths: List[str] = []
+    if not os.path.exists(effective_image_path):
+        resolved_path, attempted_paths = resolve_image_path(
+            image_path,
+            log_dir=log_dir,
+            search_subdirs=search_subdirs,
+            extra_search_paths=extra_search_paths,
+        )
+        if resolved_path:
+            effective_image_path = resolved_path
+
+    if not os.path.exists(effective_image_path):
+        suffix = f' (checked: {attempted_paths[-1]})' if attempted_paths else ''
+        st.info(f'Image not found: {image_path}{suffix}')
         return
 
     # Check if we have processed_images data
@@ -374,7 +420,7 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
 
     # Load original image (lightweight operation)
     try:
-        original_image = Image.open(image_path)
+        original_image = Image.open(effective_image_path)
     except Exception as e:
         st.error(f"Failed to load image: {e}")
         return
@@ -444,12 +490,20 @@ def display_image_with_actions_v2(image_path: str, response_text: str = "", proc
 
     # OPTIMIZATION: Early return for processed images path - skip toolbox entirely!
     if use_processed_images and has_processed_images:
-        display_processed_images_from_jsonl(processed_images, images_per_row, max_edge, show_original)
+        display_processed_images_from_jsonl(
+            processed_images,
+            images_per_row,
+            max_edge,
+            show_original,
+            log_dir=log_dir,
+            search_subdirs=search_subdirs,
+            extra_search_paths=extra_search_paths,
+        )
         return
 
     # Only create processor and process when actually needed (NOT using processed_images)
     processor = ImageProcessorV2()
-    result = processor.process_image_with_response(image_path, response_text)
+    result = processor.process_image_with_response(effective_image_path, response_text)
 
     if not result["success"]:
         st.error(f"Error processing image: {result['error']}")

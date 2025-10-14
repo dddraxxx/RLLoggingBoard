@@ -54,6 +54,8 @@ from image_actions_v2 import (
 # Import token visualization
 from token_viz import display_colored_tokens
 
+from path_utils import resolve_image_path
+
 
 st.set_page_config(
     page_title="RL Logging Board",
@@ -1637,6 +1639,12 @@ ground_truth.notna()
 
                 sample_image_original_path = None
                 sample_image_resolved_path = None
+                log_dir_for_images = None
+                if log_file_path:
+                    if os.path.isdir(log_file_path):
+                        log_dir_for_images = log_file_path
+                    else:
+                        log_dir_for_images = os.path.dirname(log_file_path)
 
                 if (
                     "image_path" in cur_step_filtered_content_dict
@@ -1646,17 +1654,9 @@ ground_truth.notna()
                     sample_index < len(cur_step_filtered_content_dict["image_path"])
                 ):
                     sample_image_original_path = cur_step_filtered_content_dict["image_path"][sample_index]
-                    candidate_path = sample_image_original_path
-
-                    if candidate_path and not os.path.exists(candidate_path):
-                        fallback_path = os.path.join(log_file_path, 'images', os.path.basename(candidate_path))
-                        if os.path.exists(fallback_path):
-                            candidate_path = fallback_path
-                        else:
-                            candidate_path = None
-
-                    if candidate_path and os.path.exists(candidate_path):
-                        sample_image_resolved_path = os.path.abspath(candidate_path)
+                    resolved_path, _ = resolve_image_path(sample_image_original_path, log_dir_for_images)
+                    if resolved_path:
+                        sample_image_resolved_path = resolved_path
 
                 if sample_image_original_path:
                     escaped_original_path = html.escape(sample_image_original_path)
@@ -1697,13 +1697,7 @@ ground_truth.notna()
                                     escaped_input_path = html.escape(img_path)
 
                                     # Resolve path similar to original image
-                                    resolved_input_path = None
-                                    if os.path.exists(img_path):
-                                        resolved_input_path = os.path.abspath(img_path)
-                                    else:
-                                        fallback_path = os.path.join(log_file_path, 'images', os.path.basename(img_path))
-                                        if os.path.exists(fallback_path):
-                                            resolved_input_path = os.path.abspath(fallback_path)
+                                    resolved_input_path, _ = resolve_image_path(img_path, log_dir_for_images)
 
                                     if resolved_input_path and os.path.exists(resolved_input_path):
                                         resolved_uri = Path(resolved_input_path).resolve().as_uri()
@@ -1770,19 +1764,22 @@ ground_truth.notna()
                                         and
                                         sample_index < len(cur_step_filtered_content_dict["image_path"])
                                 ):
-                                    image_path = sample_image_resolved_path or cur_step_filtered_content_dict["image_path"][sample_index]
+                                    raw_image_path = cur_step_filtered_content_dict["image_path"][sample_index]
+                                    image_path = sample_image_resolved_path
+                                    attempted_paths = []
+                                    if image_path is None:
+                                        image_path, attempted_paths = resolve_image_path(raw_image_path, log_dir_for_images)
 
                                     if not image_path:
                                         st.info('No `image_path` found in log line data.')
                                         continue
 
-                                    if sample_image_resolved_path is None:
-                                        if not os.path.exists(image_path):
-                                            # then search in the same directory of log file for image name with .png extension
-                                            image_path = os.path.join(log_file_path, 'images', os.path.basename(image_path))
-                                            if not os.path.exists(image_path):
-                                                st.info(f'Image path {image_path} does not exist.')
-                                                continue
+                                    if not os.path.exists(image_path):
+                                        message_suffix = ''
+                                        if attempted_paths:
+                                            message_suffix = f' (checked: {attempted_paths[-1]})'
+                                        st.info(f'Image path `{raw_image_path}` does not exist{message_suffix}.')
+                                        continue
 
                                     # Get processed_images for this sample if available
                                     processed_images = None
@@ -1798,7 +1795,8 @@ ground_truth.notna()
                                     display_image_with_actions(
                                         image_path,
                                         cur_step_filtered_content_dict["response"][sample_index],
-                                        processed_images=processed_images
+                                        processed_images=processed_images,
+                                        log_dir=log_dir_for_images
                                     )
                                 else:
                                     st.info('No `image_path` found in log line data.')
