@@ -28,6 +28,7 @@ import argparse
 import sys
 import html
 import re
+import json as py_json
 
 import orjson as json
 from fast_jsonl_reader import read_jsonl_parallel
@@ -91,6 +92,41 @@ KEY_DEFAULTS = {
 
 
 # V2 uses unified toolbox processing - no registry needed
+
+
+def _to_builtin(obj):
+    """Recursively convert numpy / set / tuple values into JSON-safe Python types."""
+    if isinstance(obj, dict):
+        return {key: _to_builtin(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_builtin(item) for item in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
+def normalize_tool_execution_history_column(entries):
+    """
+    Ensure the dataframe column stores JSON strings so PyArrow receives a uniform
+    scalar type, while preserving the underlying structured information.
+    """
+    normalized = []
+    for entry in entries:
+        if entry is None or (isinstance(entry, float) and pd.isna(entry)):
+            normalized.append("")
+            continue
+
+        entry = _to_builtin(entry)
+
+        if isinstance(entry, list):
+            normalized.append(py_json.dumps(entry, ensure_ascii=False))
+        elif isinstance(entry, dict):
+            normalized.append(py_json.dumps([entry], ensure_ascii=False))
+        else:
+            normalized.append(py_json.dumps([{'value': entry}], ensure_ascii=False))
+    return normalized
 
 
 def load_common_filters():
@@ -1399,6 +1435,12 @@ def main_page():
             for k in unhealthy_keys:
                 content_dict.pop(k)
             print("Keys that have length and prompt length mismatch: ", unhealthy_keys)
+
+            if 'tool_execution_history' in content_dict:
+                content_dict['tool_execution_history'] = normalize_tool_execution_history_column(
+                    content_dict['tool_execution_history']
+                )
+
             content_df = pd.DataFrame.from_dict(content_dict)
 
             if st.session_state['show_batch_samples']:
@@ -1408,56 +1450,95 @@ def main_page():
                 # Load common filters
                 common_filters = load_common_filters()
 
-                # Create filter interface with common filters
-                filter_col1, filter_col2, filter_col3 = st.columns([3, 2, 1])
+                # Create filter interface with 3 filter inputs
+                filter_col1, filter_col2 = st.columns([5, 1])
 
                 with filter_col1:
-                    filter_expression = st.text_input(
-                        "Filter expression:",
-                        value=st.session_state.get('last_filter_expression', ''),
+                    filter_1 = st.text_input(
+                        "Filter 1:",
+                        value=st.session_state.get('filter_1', ''),
                         help="Use pandas query syntax. Examples: reward > 0.5, response.str.len() > 100",
                         placeholder="e.g., reward > 0.5",
-                        label_visibility="collapsed"
+                        key="filter_input_1"
                     )
-                    # Remember the last filter expression
-                    if filter_expression != st.session_state.get('last_filter_expression', ''):
-                        st.session_state.last_filter_expression = filter_expression
+                    filter_2 = st.text_input(
+                        "Filter 2:",
+                        value=st.session_state.get('filter_2', ''),
+                        help="Use pandas query syntax. Will be combined with Filter 1 using AND",
+                        placeholder="e.g., response.str.contains('tool_call', case=False, na=False)",
+                        key="filter_input_2"
+                    )
+                    filter_3 = st.text_input(
+                        "Filter 3:",
+                        value=st.session_state.get('filter_3', ''),
+                        help="Use pandas query syntax. Will be combined with Filter 1 and 2 using AND",
+                        placeholder="e.g., avg_kl < 0.5",
+                        key="filter_input_3"
+                    )
+
+                    # Store filter values in session state
+                    st.session_state.filter_1 = filter_1
+                    st.session_state.filter_2 = filter_2
+                    st.session_state.filter_3 = filter_3
+
+                    # Combine filters with AND logic
+                    filter_parts = [f.strip() for f in [filter_1, filter_2, filter_3] if f.strip()]
+                    if filter_parts:
+                        filter_expression = " & ".join([f"({part})" for part in filter_parts])
+                    else:
+                        filter_expression = ""
 
                 with filter_col2:
-                    st.write("")  # Spacer
-
-                with filter_col3:
+                    st.write("")  # Spacer for alignment
                     filter_enabled = st.checkbox(
-                        "Enable Filter",
+                        "Enable",
                         value=True,
-                        key="filter_enabled_checkbox"
+                        key="filter_enabled_checkbox",
+                        help="Enable/disable all filters"
                     )
+                    if st.button("🗑️ Clear", key="clear_filters_btn", help="Clear all filters", use_container_width=True):
+                        st.session_state.filter_1 = ""
+                        st.session_state.filter_2 = ""
+                        st.session_state.filter_3 = ""
+                        st.rerun()
 
-                # Common filter cards
+                # Common filter cards - populate first empty filter slot
                 if common_filters:
+                    st.caption("**Quick Filters** (click to add to first empty slot):")
                     cols = st.columns(len(common_filters))
                     for i, filter_expr in enumerate(common_filters):
                         with cols[i]:
                             if st.button(
-                                filter_expr,
+                                filter_expr[:30] + "..." if len(filter_expr) > 30 else filter_expr,
                                 key=f"filter_btn_{i}",
-                                use_container_width=True
+                                use_container_width=True,
+                                help=filter_expr
                             ):
-                                st.session_state.last_filter_expression = filter_expr
+                                # Find first empty filter slot and populate it
+                                if not st.session_state.get('filter_1', '').strip():
+                                    st.session_state.filter_1 = filter_expr
+                                elif not st.session_state.get('filter_2', '').strip():
+                                    st.session_state.filter_2 = filter_expr
+                                elif not st.session_state.get('filter_3', '').strip():
+                                    st.session_state.filter_3 = filter_expr
+                                else:
+                                    # All slots filled, replace filter 1
+                                    st.session_state.filter_1 = filter_expr
                                 st.rerun()
 
                 # Apply filter if enabled and expression is provided
                 filtered_df = content_df
                 filter_error = None
                 filter_status_msg = ""
+                active_filter_count = len([f for f in [filter_1, filter_2, filter_3] if f.strip()])
 
                 if filter_enabled and filter_expression.strip():
                     try:
                         filtered_df = content_df.query(filter_expression)
                         if len(filtered_df) == 0:
-                            filter_status_msg = f"⚠️ Filter returned 0 rows out of {len(content_df)} total"
+                            filter_status_msg = f"⚠️ Filter returned 0 rows out of {len(content_df)} total ({active_filter_count} filter(s) active)"
                         else:
-                            filter_status_msg = f"✅ Showing {len(filtered_df)} out of {len(content_df)} rows (filtered)"
+                            filter_status_msg = f"✅ Showing {len(filtered_df)} out of {len(content_df)} rows ({active_filter_count} filter(s) active)"
                     except Exception as e:
                         filter_error = str(e)
                         filter_status_msg = f"❌ Filter error: {filter_error}"

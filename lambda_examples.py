@@ -23,6 +23,65 @@ def datasource_count_function(step_data):
         datasource = {k: (np_arr == k).sum() for k in np.unique(np_arr)}
     return datasource
 
+def all_reward_function(step_data):
+    result = {}
+    reward_keys = []
+    for keys in step_data:
+        if keys.endswith('zoom_reward'):
+            reward_keys.append(keys)
+
+    if 'data_source' not in step_data:
+        return result
+
+    data_sources = step_data['data_source']
+
+    for reward_key in reward_keys:
+        if reward_key not in step_data:
+            continue
+        reward_values = step_data[reward_key]
+
+        for ds, reward_val in zip(data_sources, reward_values):
+            combined_key = f"{ds}_{reward_key}"
+            if combined_key not in result:
+                result[combined_key] = []
+            result[combined_key].append(reward_val)
+
+    return result
+
+def datasource_acc_reward_function(step_data):
+    datasource = {}
+    if 'data_source' not in step_data:
+        return datasource
+    for ds, reward, acc_reward in zip(step_data['data_source'], step_data['reward'], step_data['acc_reward']):
+        if ds not in datasource:
+            datasource[ds] = []
+        datasource[ds].append(acc_reward)
+    return datasource
+
+def datasource_valid_tool_count_function(step_data):
+    from collections import defaultdict
+    datasource = defaultdict(list)
+    if 'data_source' not in step_data:
+        return datasource
+
+    responses = step_data.get('response', [])
+    data_sources = step_data.get('data_source', [])
+
+    import re
+    tool_call_pattern = re.compile(r'<tool_call>.*?</tool_call>', re.DOTALL)
+    tool_response_pattern = re.compile(r'<tool_response>.*?</tool_response>', re.DOTALL)
+
+    for ds, response in zip(data_sources, responses):
+        if isinstance(response, str):
+            tool_calls = tool_call_pattern.findall(response)
+            tool_responses = tool_response_pattern.findall(response)
+            valid_tool_count = min(len(tool_calls), len(tool_responses))
+            datasource[ds].append(valid_tool_count)
+        else:
+            datasource[ds].append(0)
+
+    return dict(datasource)
+
 def datasource_reward_function(step_data):
     datasource = {}
     if 'data_source' not in step_data:
@@ -136,6 +195,44 @@ def each_tool_avg_count_function(step_data):
     total_cases = len(responses)
     return {k: tool_counts[k]/total_cases for k in tool_counts}
 
+def zoom_call_target_image_function(step_data):
+    responses = step_data.get('response', [])
+    from collections import defaultdict
+    import re
+    import json
+
+    # Pattern to extract tool_call content
+    tool_call_content_re = re.compile(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>')
+    target_image_counts = defaultdict(int)
+    total_zoom_calls = 0
+
+    for response in responses:
+        if not isinstance(response, str):
+            continue
+
+        tool_call_content = tool_call_content_re.findall(response, re.DOTALL)
+        if tool_call_content:
+            for tool_call in tool_call_content:
+                try:
+                    tool_data = json.loads(tool_call)
+                    # Check if this is a zoom_in tool call
+                    if 'zoom_in' in tool_data.get('name').lower():
+                        total_zoom_calls += 1
+                        arguments = tool_data.get('arguments', {})
+                        target_image = arguments.get('target_image')
+
+                        # Count target_image values from -2 to 2
+                        if target_image is not None and target_image in [-2, -1, 0, 1, 2]:
+                            target_image_counts[target_image] += 1
+                except (json.JSONDecodeError, KeyError):
+                    continue
+
+    # Calculate distribution
+    if total_zoom_calls == 0:
+        return {str(i): 0 for i in range(-2, 3)}
+
+    return {str(i): target_image_counts[i] / total_zoom_calls for i in range(-2, 3)}
+
 def valid_tool_use_count_function(step_data):
     responses = step_data.get('response', [])
     turn_counts = []
@@ -201,9 +298,13 @@ def acc_reward_function(step_data):
     }
 
 LAMBDA_EXAMPLES = [
+    ("Zoom call target image", inspect.getsource(zoom_call_target_image_function)),
     ["Acc reward", inspect.getsource(acc_reward_function)],
-    ("Tool error penalty applied", inspect.getsource(tool_error_penalty_applied_function)),
+    ("All reward", inspect.getsource(all_reward_function)),
+    ("Datasource acc reward", inspect.getsource(datasource_acc_reward_function)),
+    ("Datasource valid tool count", inspect.getsource(datasource_valid_tool_count_function)),
     ("Valid tool use count", inspect.getsource(valid_tool_use_count_function)),
+    ("Tool error penalty applied", inspect.getsource(tool_error_penalty_applied_function)),
     ("Answer tag count", inspect.getsource(answer_tag_count_function)),
     ("Assertion error count", inspect.getsource(assertion_error_count_function)),
     ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
