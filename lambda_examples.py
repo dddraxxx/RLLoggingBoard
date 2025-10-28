@@ -76,7 +76,7 @@ def datasource_valid_tool_count_function(step_data):
             tool_calls = tool_call_pattern.findall(response)
             tool_responses = tool_response_pattern.findall(response)
             valid_tool_count = min(len(tool_calls), len(tool_responses))
-            datasource[ds].append(valid_tool_count)
+            datasource[ds].append(valid_tool_count/10.0)
         else:
             datasource[ds].append(0)
 
@@ -291,6 +291,77 @@ def tool_error_penalty_applied_function(step_data):
         'tool_error_penalty_applied': tool_error_penalty_applied
     }
 
+def zoomin_tool_count_function(step_data):
+    if 'data_source' not in step_data:
+        return {}
+
+    responses = step_data.get('response', [])
+    data_sources = step_data.get('data_source', [])
+    acc_rewards = step_data.get('acc_reward', [])
+
+    import re
+    from itertools import zip_longest
+    tool_call_content_re = re.compile(r'</tool_response><\|im_end\|>\s*<\|im_start\|>assistant', re.DOTALL)
+
+    total_tool_calls = 0
+    filtered_count = 0
+    total_acc_reward = 0.0
+
+    if not isinstance(acc_rewards, (list, tuple, np.ndarray)):
+        acc_rewards = [acc_rewards] * len(responses)
+
+    for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
+        if not isinstance(ds, str):
+            continue
+        ds_lower = ds.lower()
+        if 'sealvqa' in ds_lower or 'visual_probe' in ds_lower:
+            filtered_count += 1
+            if isinstance(response, str):
+                tool_call_content = tool_call_content_re.findall(response)
+                total_tool_calls += len(tool_call_content) / 10.0
+            try:
+                total_acc_reward += float(acc_reward)
+            except (TypeError, ValueError):
+                total_acc_reward += 0.0
+
+    if filtered_count == 0:
+        return {'avg_tool_count': 0, 'avg_acc_reward': 0}
+
+    return {
+        'avg_tool_count': total_tool_calls / filtered_count,
+        'avg_acc_reward': total_acc_reward / filtered_count
+    }
+
+def non_zoomin_tool_count_function(step_data):
+    if 'data_source' not in step_data:
+        return {}
+
+    responses = step_data.get('response', [])
+    data_sources = step_data.get('data_source', [])
+
+    import re
+    tool_call_content_re = re.compile(r'</tool_response><\|im_end\|>\s*<\|im_start\|>assistant', re.DOTALL)
+
+    total_tool_calls = 0
+    filtered_count = 0
+
+    for response, ds in zip(responses, data_sources):
+        ds_lower = ds.lower() if isinstance(ds, str) else ''
+        if 'sealvqa' in ds_lower or 'visual_probe' in ds_lower:
+            continue
+
+        filtered_count += 1
+        if isinstance(response, str):
+            tool_call_content = tool_call_content_re.findall(response)
+            total_tool_calls += len(tool_call_content) / 10.0
+
+    if filtered_count == 0:
+        return {'avg_tool_count': 0}
+
+    return {
+        'avg_tool_count': total_tool_calls / filtered_count
+    }
+
 def acc_reward_function(step_data):
     acc_reward = step_data.get('acc_reward', 0.0)
     return {
@@ -299,10 +370,12 @@ def acc_reward_function(step_data):
 
 LAMBDA_EXAMPLES = [
     ("Zoom call target image", inspect.getsource(zoom_call_target_image_function)),
-    ["Acc reward", inspect.getsource(acc_reward_function)],
-    ("All reward", inspect.getsource(all_reward_function)),
     ("Datasource acc reward", inspect.getsource(datasource_acc_reward_function)),
     ("Datasource valid tool count", inspect.getsource(datasource_valid_tool_count_function)),
+    ("Zoom-in tool count", inspect.getsource(zoomin_tool_count_function)),
+    ("Non zoom-in tool count", inspect.getsource(non_zoomin_tool_count_function)),
+    ["Acc reward", inspect.getsource(acc_reward_function)],
+    ("All reward", inspect.getsource(all_reward_function)),
     ("Valid tool use count", inspect.getsource(valid_tool_use_count_function)),
     ("Tool error penalty applied", inspect.getsource(tool_error_penalty_applied_function)),
     ("Answer tag count", inspect.getsource(answer_tag_count_function)),
