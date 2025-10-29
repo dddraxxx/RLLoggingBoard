@@ -7,7 +7,7 @@ For multi-line def functions, use triple quotes and name your function 'custom_f
 
 import numpy as np
 import pandas as pd
-import inspect
+from functools import partial
 
 def tool_supervised_score_function(step_data):
     if 'tool_supervised_score' not in step_data:
@@ -291,7 +291,17 @@ def tool_error_penalty_applied_function(step_data):
         'tool_error_penalty_applied': tool_error_penalty_applied
     }
 
-def zoomin_tool_count_function(step_data):
+def _generic_tool_count_function(step_data, filter_keywords, include=True):
+    """Generic function to count tool calls and compute average rewards for filtered data sources.
+
+    Args:
+        step_data: Dictionary containing response, data_source, and acc_reward data
+        filter_keywords: List of keywords to match in data source (case-insensitive)
+        include: If True, include matching sources; if False, exclude matching sources
+
+    Returns:
+        Dictionary with avg_tool_count and avg_acc_reward
+    """
     if 'data_source' not in step_data:
         return {}
 
@@ -314,7 +324,12 @@ def zoomin_tool_count_function(step_data):
         if not isinstance(ds, str):
             continue
         ds_lower = ds.lower()
-        if 'sealvqa' in ds_lower or 'visual_probe' in ds_lower:
+
+        # Check if any keyword matches
+        matches = any(keyword in ds_lower for keyword in filter_keywords)
+
+        # Include or exclude based on the include flag
+        if matches == include:
             filtered_count += 1
             if isinstance(response, str):
                 tool_call_content = tool_call_content_re.findall(response)
@@ -332,35 +347,13 @@ def zoomin_tool_count_function(step_data):
         'avg_acc_reward': total_acc_reward / filtered_count
     }
 
-def non_zoomin_tool_count_function(step_data):
-    if 'data_source' not in step_data:
-        return {}
-
-    responses = step_data.get('response', [])
-    data_sources = step_data.get('data_source', [])
-
-    import re
-    tool_call_content_re = re.compile(r'</tool_response><\|im_end\|>\s*<\|im_start\|>assistant', re.DOTALL)
-
-    total_tool_calls = 0
-    filtered_count = 0
-
-    for response, ds in zip(responses, data_sources):
-        ds_lower = ds.lower() if isinstance(ds, str) else ''
-        if 'sealvqa' in ds_lower or 'visual_probe' in ds_lower:
-            continue
-
-        filtered_count += 1
-        if isinstance(response, str):
-            tool_call_content = tool_call_content_re.findall(response)
-            total_tool_calls += len(tool_call_content) / 10.0
-
-    if filtered_count == 0:
-        return {'avg_tool_count': 0}
-
-    return {
-        'avg_tool_count': total_tool_calls / filtered_count
-    }
+# Create specific functions using partial with serializable arguments
+highres_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['probe'], include=True)
+seal_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa'], include=True)
+rotflip_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['docvqa'], include=True)
+draw_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['read_value','compare'], include=True)
+zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=True)
+non_zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=False)
 
 def acc_reward_function(step_data):
     acc_reward = step_data.get('acc_reward', 0.0)
@@ -369,24 +362,28 @@ def acc_reward_function(step_data):
     }
 
 LAMBDA_EXAMPLES = [
-    ("Zoom call target image", inspect.getsource(zoom_call_target_image_function)),
-    ("Datasource acc reward", inspect.getsource(datasource_acc_reward_function)),
-    ("Datasource valid tool count", inspect.getsource(datasource_valid_tool_count_function)),
-    ("Zoom-in tool count", inspect.getsource(zoomin_tool_count_function)),
-    ("Non zoom-in tool count", inspect.getsource(non_zoomin_tool_count_function)),
-    ["Acc reward", inspect.getsource(acc_reward_function)],
-    ("All reward", inspect.getsource(all_reward_function)),
-    ("Valid tool use count", inspect.getsource(valid_tool_use_count_function)),
-    ("Tool error penalty applied", inspect.getsource(tool_error_penalty_applied_function)),
-    ("Answer tag count", inspect.getsource(answer_tag_count_function)),
-    ("Assertion error count", inspect.getsource(assertion_error_count_function)),
-    ("Tool supervised score", inspect.getsource(tool_supervised_score_function)),
-    ("Tool call count", inspect.getsource(tool_calls_analysis_function)),
-    ("Tool use percent", inspect.getsource(each_tool_avg_count_function)),
-    ("Tool call to source count", inspect.getsource(tool_call_to_source_count_function)),
-    ("Tool call to source percent", inspect.getsource(tool_call_to_source_percent_function)),
-    ("Datasource reward", inspect.getsource(datasource_reward_function)),
-    ("Datasource count", inspect.getsource(datasource_count_function)),
-    ("Docvqa aug tool call rate", inspect.getsource(docvqa_aug_tool_call_rate_function)),
-    ("Docvqa non aug tool call rate", inspect.getsource(docvqa_non_aug_tool_call_rate_function)),
+    ("Highres tool count", highres_tool_count_function),
+    ("Seal tool count", seal_tool_count_function),
+    ("Rotflip tool count", rotflip_tool_count_function),
+    ("Draw tool count", draw_tool_count_function),
+    ("Zoom call target image", zoom_call_target_image_function),
+    ("Datasource acc reward", datasource_acc_reward_function),
+    ("Datasource valid tool count", datasource_valid_tool_count_function),
+    ("Zoom-in tool count", zoomin_tool_count_function),
+    ("Non zoom-in tool count", non_zoomin_tool_count_function),
+    ("Acc reward", acc_reward_function),
+    ("All reward", all_reward_function),
+    ("Valid tool use count", valid_tool_use_count_function),
+    ("Tool error penalty applied", tool_error_penalty_applied_function),
+    ("Answer tag count", answer_tag_count_function),
+    ("Assertion error count", assertion_error_count_function),
+    ("Tool supervised score", tool_supervised_score_function),
+    ("Tool call count", tool_calls_analysis_function),
+    ("Tool use percent", each_tool_avg_count_function),
+    ("Tool call to source count", tool_call_to_source_count_function),
+    ("Tool call to source percent", tool_call_to_source_percent_function),
+    ("Datasource reward", datasource_reward_function),
+    ("Datasource count", datasource_count_function),
+    ("Docvqa aug tool call rate", docvqa_aug_tool_call_rate_function),
+    ("Docvqa non aug tool call rate", docvqa_non_aug_tool_call_rate_function),
 ]
