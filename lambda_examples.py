@@ -291,16 +291,17 @@ def tool_error_penalty_applied_function(step_data):
         'tool_error_penalty_applied': tool_error_penalty_applied
     }
 
-def _generic_tool_count_function(step_data, filter_keywords, include=True):
+def _generic_tool_count_function(step_data, filter_keywords, include=True, return_wprefix=False):
     """Generic function to count tool calls and compute average rewards for filtered data sources.
 
     Args:
         step_data: Dictionary containing response, data_source, and acc_reward data
         filter_keywords: List of keywords to match in data source (case-insensitive)
         include: If True, include matching sources; if False, exclude matching sources
+        return_wprefix: If True, return metrics grouped by data_source with prefixed keys
 
     Returns:
-        Dictionary with avg_tool_count and avg_acc_reward
+        Dictionary with avg_tool_count and avg_acc_reward (optionally prefixed by data_source)
     """
     if 'data_source' not in step_data:
         return {}
@@ -311,47 +312,84 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True):
 
     import re
     from itertools import zip_longest
+    from collections import defaultdict
     tool_call_content_re = re.compile(r'</tool_response><\|im_end\|>\s*<\|im_start\|>assistant', re.DOTALL)
-
-    total_tool_calls = 0
-    filtered_count = 0
-    total_acc_reward = 0.0
 
     if not isinstance(acc_rewards, (list, tuple, np.ndarray)):
         acc_rewards = [acc_rewards] * len(responses)
 
-    for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
-        if not isinstance(ds, str):
-            continue
-        ds_lower = ds.lower()
+    if return_wprefix:
+        # Group by data_source after filtering by keywords
+        ds_stats = defaultdict(lambda: {'total_tool_calls': 0, 'total_acc_reward': 0.0, 'count': 0})
 
-        # Check if any keyword matches
-        matches = any(keyword in ds_lower for keyword in filter_keywords)
+        for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
+            if not isinstance(ds, str):
+                continue
+            ds_lower = ds.lower()
 
-        # Include or exclude based on the include flag
-        if matches == include:
-            filtered_count += 1
-            if isinstance(response, str):
-                tool_call_content = tool_call_content_re.findall(response)
-                total_tool_calls += len(tool_call_content) / 10.0
-            try:
-                total_acc_reward += float(acc_reward)
-            except (TypeError, ValueError):
-                total_acc_reward += 0.0
+            # Check if any keyword matches
+            matches = any(keyword in ds_lower for keyword in filter_keywords)
 
-    if filtered_count == 0:
-        return {'avg_tool_count': 0, 'avg_acc_reward': 0}
+            # Include or exclude based on the include flag
+            if matches == include:
+                # Clean data_source name for use as prefix
+                ds_prefix = ds.lower().replace(' ', '_').replace('-', '_')
 
-    return {
-        'avg_tool_count': total_tool_calls / filtered_count,
-        'avg_acc_reward': total_acc_reward / filtered_count
-    }
+                ds_stats[ds_prefix]['count'] += 1
+                if isinstance(response, str):
+                    tool_call_content = tool_call_content_re.findall(response)
+                    ds_stats[ds_prefix]['total_tool_calls'] += len(tool_call_content) / 10.0
+                try:
+                    ds_stats[ds_prefix]['total_acc_reward'] += float(acc_reward)
+                except (TypeError, ValueError):
+                    ds_stats[ds_prefix]['total_acc_reward'] += 0.0
+
+        # Build result dictionary with prefixed keys
+        result = {}
+        for ds_prefix, stats in ds_stats.items():
+            if stats['count'] > 0:
+                result[f'{ds_prefix}_avg_tool_count'] = stats['total_tool_calls'] / stats['count']
+                result[f'{ds_prefix}_avg_acc_reward'] = stats['total_acc_reward'] / stats['count']
+
+        return result
+    else:
+        # Original behavior: filter and aggregate
+        total_tool_calls = 0
+        filtered_count = 0
+        total_acc_reward = 0.0
+
+        for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
+            if not isinstance(ds, str):
+                continue
+            ds_lower = ds.lower()
+
+            # Check if any keyword matches
+            matches = any(keyword in ds_lower for keyword in filter_keywords)
+
+            # Include or exclude based on the include flag
+            if matches == include:
+                filtered_count += 1
+                if isinstance(response, str):
+                    tool_call_content = tool_call_content_re.findall(response)
+                    total_tool_calls += len(tool_call_content) / 10.0
+                try:
+                    total_acc_reward += float(acc_reward)
+                except (TypeError, ValueError):
+                    total_acc_reward += 0.0
+
+        if filtered_count == 0:
+            return {'avg_tool_count': 0, 'avg_acc_reward': 0}
+
+        return {
+            'avg_tool_count': total_tool_calls / filtered_count,
+            'avg_acc_reward': total_acc_reward / filtered_count
+        }
 
 # Create specific functions using partial with serializable arguments
 highres_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['probe'], include=True)
 seal_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa'], include=True)
 rotflip_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['docvqa'], include=True)
-draw_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['read_value','compare'], include=True)
+draw_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['read_value','compare'], include=True, return_wprefix=True)
 zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=True)
 non_zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=False)
 
