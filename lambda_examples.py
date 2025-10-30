@@ -399,7 +399,19 @@ def acc_reward_function(step_data):
         'acc_reward': acc_reward
     }
 
+def filter_rotflip_reward_function(step_data):
+    """Extract filter_rotflip_reward from curriculum1 reward output."""
+    if 'filter_rotflip_reward' not in step_data:
+        return {}
+
+    filter_rotflip_reward = step_data.get('filter_rotflip_reward', 0.0)
+
+    return {
+        'filter_rotflip_reward': filter_rotflip_reward
+    }
+
 LAMBDA_EXAMPLES = [
+    ("Filter rotflip reward", filter_rotflip_reward_function),
     ("Highres tool count", highres_tool_count_function),
     ("Seal tool count", seal_tool_count_function),
     ("Rotflip tool count", rotflip_tool_count_function),
