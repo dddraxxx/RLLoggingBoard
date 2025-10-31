@@ -324,13 +324,16 @@ def load_log_file(
             # Determine number of workers based on file size
             workers = min(32, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 32
 
+            # Check if filename contains "_val" - if so, load all samples (no limit)
+            current_max_samples = float('inf') if '_val' in all_logs[log_index] else max_samples_each_step
+
             data = read_jsonl_parallel(
                 file_path=rl_log_file,
                 workers=workers,
                 start_step=start_step,
                 end_step=end_step,
                 step_freq=step_freq,
-                max_samples_each_step=max_samples_each_step,
+                max_samples_each_step=current_max_samples,
                 keys_to_collect=keys_to_collect,  # None for dynamic discovery
                 verbose=False,
                 show_progress=True,
@@ -625,7 +628,7 @@ def create_log_selector(all_log_paths, base_root_path, dir_to_files_map, current
         st.caption(f"📊 {len(available_files)} file(s) in selected directory")
 
         if available_files:
-            # Allow multi-selection of files within the directory (default to all)
+            # Allow multi-selection of files within the directory (default to first file only)
             sanitized_dir_key = re.sub(r'[^0-9a-zA-Z_]', '_', selected_dir)
             widget_key = f"file_selector_{sanitized_dir_key}"
 
@@ -633,7 +636,7 @@ def create_log_selector(all_log_paths, base_root_path, dir_to_files_map, current
             selected_files = st.multiselect(
                 "Choose files:",
                 options=available_files,
-                default=available_files,
+                default=[available_files[0]],  # Only select first file by default
                 key=widget_key,
                 label_visibility="collapsed",
                 help="Select one or more files to load from this directory"

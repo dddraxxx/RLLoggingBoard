@@ -400,15 +400,37 @@ def acc_reward_function(step_data):
     }
 
 def filter_rotflip_reward_function(step_data):
-    """Extract filter_rotflip_reward from curriculum1 reward output."""
+    """Extract filter_rotflip_reward and rotflip_answer_index ratios from curriculum1 reward output."""
     if 'filter_rotflip_reward' not in step_data:
         return {}
 
     filter_rotflip_reward = step_data.get('filter_rotflip_reward', 0.0)
+    result = {'filter_rotflip_reward': filter_rotflip_reward}
 
-    return {
-        'filter_rotflip_reward': filter_rotflip_reward
-    }
+    # Calculate rotflip_answer_index ratios
+    if 'rotflip_answer_index' in step_data:
+        rotflip_indices = step_data.get('rotflip_answer_index', [])
+
+        # Handle single value vs array
+        if not isinstance(rotflip_indices, (list, tuple, np.ndarray)):
+            rotflip_indices = [rotflip_indices]
+
+        # Count occurrences
+        index_counts = {0: 0, 1: 0, 2: 0}
+        total = 0
+
+        for idx in rotflip_indices:
+            if idx in [0, 1, 2]:
+                index_counts[idx] += 1
+                total += 1
+
+        # Calculate ratios
+        if total > 0:
+            result['idx_0_ratio'] = index_counts[0] / total
+            result['idx_1_ratio'] = index_counts[1] / total
+            result['idx_2_ratio'] = index_counts[2] / total
+
+    return result
 
 LAMBDA_EXAMPLES = [
     ("Filter rotflip reward", filter_rotflip_reward_function),
