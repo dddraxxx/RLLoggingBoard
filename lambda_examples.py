@@ -291,7 +291,7 @@ def tool_error_penalty_applied_function(step_data):
         'tool_error_penalty_applied': tool_error_penalty_applied
     }
 
-def _generic_tool_count_function(step_data, filter_keywords, include=True, return_wprefix=False):
+def _generic_tool_count_function(step_data, filter_keywords, include=True, return_wprefix=False, extra_keys=None):
     """Generic function to count tool calls and compute average rewards for filtered data sources.
 
     Args:
@@ -299,9 +299,11 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
         filter_keywords: List of keywords to match in data source (case-insensitive)
         include: If True, include matching sources; if False, exclude matching sources
         return_wprefix: If True, return metrics grouped by data_source with prefixed keys
+        extra_keys: List of additional keys to extract and average from filtered items
 
     Returns:
         Dictionary with avg_tool_count and avg_acc_reward (optionally prefixed by data_source)
+        Also includes averages for any extra_keys specified
     """
     if 'data_source' not in step_data:
         return {}
@@ -309,6 +311,16 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
     responses = step_data.get('response', [])
     data_sources = step_data.get('data_source', [])
     acc_rewards = step_data.get('acc_reward', [])
+
+    # Handle extra_keys
+    if extra_keys is None:
+        extra_keys = []
+    extra_data = {}
+    for key in extra_keys:
+        data = step_data.get(key, [])
+        if not isinstance(data, (list, tuple, np.ndarray)):
+            data = [data] * len(responses)
+        extra_data[key] = data
 
     import re
     from itertools import zip_longest
@@ -320,9 +332,14 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
 
     if return_wprefix:
         # Group by data_source after filtering by keywords
-        ds_stats = defaultdict(lambda: {'total_tool_calls': 0, 'total_acc_reward': 0.0, 'count': 0})
+        def _default_stats():
+            stats = {'total_tool_calls': 0, 'total_acc_reward': 0.0, 'count': 0}
+            for key in extra_keys:
+                stats[f'total_{key}'] = 0.0
+            return stats
+        ds_stats = defaultdict(_default_stats)
 
-        for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
+        for idx, (response, ds, acc_reward) in enumerate(zip_longest(responses, data_sources, acc_rewards, fillvalue=None)):
             if not isinstance(ds, str):
                 continue
             ds_lower = ds.lower()
@@ -344,12 +361,22 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
                 except (TypeError, ValueError):
                     ds_stats[ds_prefix]['total_acc_reward'] += 0.0
 
+                # Accumulate extra keys
+                for key in extra_keys:
+                    try:
+                        value = extra_data[key][idx] if idx < len(extra_data[key]) else 0.0
+                        ds_stats[ds_prefix][f'total_{key}'] += float(value)
+                    except (TypeError, ValueError, IndexError):
+                        ds_stats[ds_prefix][f'total_{key}'] += 0.0
+
         # Build result dictionary with prefixed keys
         result = {}
         for ds_prefix, stats in ds_stats.items():
             if stats['count'] > 0:
                 result[f'{ds_prefix}_avg_tool_count'] = stats['total_tool_calls'] / stats['count']
                 result[f'{ds_prefix}_avg_acc_reward'] = stats['total_acc_reward'] / stats['count']
+                for key in extra_keys:
+                    result[f'{ds_prefix}_avg_{key}'] = stats[f'total_{key}'] / stats['count']
 
         return result
     else:
@@ -357,8 +384,9 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
         total_tool_calls = 0
         filtered_count = 0
         total_acc_reward = 0.0
+        total_extra = {key: 0.0 for key in extra_keys}
 
-        for response, ds, acc_reward in zip_longest(responses, data_sources, acc_rewards, fillvalue=None):
+        for idx, (response, ds, acc_reward) in enumerate(zip_longest(responses, data_sources, acc_rewards, fillvalue=None)):
             if not isinstance(ds, str):
                 continue
             ds_lower = ds.lower()
@@ -377,19 +405,33 @@ def _generic_tool_count_function(step_data, filter_keywords, include=True, retur
                 except (TypeError, ValueError):
                     total_acc_reward += 0.0
 
-        if filtered_count == 0:
-            return {'avg_tool_count': 0, 'avg_acc_reward': 0}
+                # Accumulate extra keys
+                for key in extra_keys:
+                    try:
+                        value = extra_data[key][idx] if idx < len(extra_data[key]) else 0.0
+                        total_extra[key] += float(value)
+                    except (TypeError, ValueError, IndexError):
+                        total_extra[key] += 0.0
 
-        return {
+        if filtered_count == 0:
+            result = {'avg_tool_count': 0, 'avg_acc_reward': 0}
+            for key in extra_keys:
+                result[f'avg_{key}'] = 0.0
+            return result
+
+        result = {
             'avg_tool_count': total_tool_calls / filtered_count,
             'avg_acc_reward': total_acc_reward / filtered_count
         }
+        for key in extra_keys:
+            result[f'avg_{key}'] = total_extra[key] / filtered_count
+        return result
 
 # Create specific functions using partial with serializable arguments
 highres_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['probe'], include=True)
 seal_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa'], include=True)
-rotflip_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['docvqa'], include=True)
-draw_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['read_value','compare'], include=True, return_wprefix=True)
+rotflip_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['docvqa'], include=True, extra_keys=['filter_rotflip_reward'])
+draw_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['read_value','compare'], include=True, return_wprefix=True, extra_keys=['filter_draw_reward', 'filter_compare_reward'])
 zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=True)
 non_zoomin_tool_count_function = partial(_generic_tool_count_function, filter_keywords=['sealvqa', 'visual_probe'], include=False)
 
@@ -400,27 +442,47 @@ def acc_reward_function(step_data):
     }
 
 def filter_rotflip_reward_function(step_data):
-    """Extract filter_rotflip_reward and rotflip_answer_index ratios from curriculum1 reward output."""
-    if 'filter_rotflip_reward' not in step_data:
+    """Extract filter_rotflip_reward and rotflip_answer_index ratios from curriculum1 reward output, filtered for docvqa."""
+    if 'data_source' not in step_data or 'filter_rotflip_reward' not in step_data:
         return {}
 
-    filter_rotflip_reward = step_data.get('filter_rotflip_reward', 0.0)
-    result = {'filter_rotflip_reward': filter_rotflip_reward}
+    data_sources = step_data.get('data_source', [])
+    filter_rotflip_rewards = step_data.get('filter_rotflip_reward', [])
+    rotflip_answer_indices = step_data.get('rotflip_answer_index', [])
+
+    # Ensure lists
+    if not isinstance(data_sources, (list, tuple, np.ndarray)):
+        data_sources = [data_sources]
+    if not isinstance(filter_rotflip_rewards, (list, tuple, np.ndarray)):
+        filter_rotflip_rewards = [filter_rotflip_rewards]
+    if not isinstance(rotflip_answer_indices, (list, tuple, np.ndarray)):
+        rotflip_answer_indices = [rotflip_answer_indices]
+
+    # Filter for docvqa items
+    filtered_rewards = []
+    filtered_indices = []
+
+    from itertools import zip_longest
+    for ds, reward, idx in zip_longest(data_sources, filter_rotflip_rewards, rotflip_answer_indices, fillvalue=None):
+        if isinstance(ds, str) and 'docvqa' in ds.lower():
+            if reward is not None:
+                filtered_rewards.append(reward)
+            if idx is not None:
+                filtered_indices.append(idx)
+
+    if not filtered_rewards:
+        return {}
+
+    # Calculate average reward
+    result = {'filter_rotflip_reward': np.mean(filtered_rewards)}
 
     # Calculate rotflip_answer_index ratios
-    if 'rotflip_answer_index' in step_data:
-        rotflip_indices = step_data.get('rotflip_answer_index', [])
-
-        # Handle single value vs array
-        if not isinstance(rotflip_indices, (list, tuple, np.ndarray)):
-            rotflip_indices = [rotflip_indices]
-
-        # Count occurrences
-        index_counts = {0: 0, 1: 0, 2: 0}
+    if filtered_indices:
+        index_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
         total = 0
 
-        for idx in rotflip_indices:
-            if idx in [0, 1, 2]:
+        for idx in filtered_indices:
+            if idx in index_counts:
                 index_counts[idx] += 1
                 total += 1
 
@@ -429,6 +491,9 @@ def filter_rotflip_reward_function(step_data):
             result['idx_0_ratio'] = index_counts[0] / total
             result['idx_1_ratio'] = index_counts[1] / total
             result['idx_2_ratio'] = index_counts[2] / total
+            result['idx_3_ratio'] = index_counts[3] / total
+            result['idx_4_ratio'] = index_counts[4] / total
+            result['idx_5_ratio'] = index_counts[5] / total
 
     return result
 

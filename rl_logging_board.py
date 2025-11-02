@@ -322,7 +322,7 @@ def load_log_file(
         start_time = time.time()
         try:
             # Determine number of workers based on file size
-            workers = min(32, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 32
+            workers = min(64, max(2, file_size // (100 * 1024 * 1024)))  # 1 worker per 100MB, max 32
 
             # Check if filename contains "_val" - if so, load all samples (no limit)
             current_max_samples = float('inf') if '_val' in all_logs[log_index] else max_samples_each_step
