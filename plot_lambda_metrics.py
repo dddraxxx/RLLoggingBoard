@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - plotly is optional
 from fast_jsonl_reader import read_jsonl_parallel
 from fast_file_search import find_log_files
 from lambda_examples_v2 import LAMBDA_EXAMPLES
+from sample_conversation_exporter import export_step_samples
 
 MetricFunc = Callable[[Dict[str, List]], Dict[str, List]]
 
@@ -134,6 +135,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional limit on the number of steps to evaluate (useful for quick sanity checks).",
     )
+    parser.add_argument(
+        "--sample-export-count",
+        type=int,
+        default=3,
+        help=(
+            "If >0, export this many samples per data source as JSON under logs/rl_sample_vis."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -148,6 +157,15 @@ def get_selected_metrics(metric_names: Sequence[str]) -> Dict[str, MetricFunc]:
         raise ValueError(f"Unknown metric(s): {', '.join(missing)}")
 
     return {name: registry[name] for name in metric_names}
+
+
+def locate_logs_root(log_file: str) -> Path:
+    """Return the nearest 'logs' directory for the provided log file."""
+    path = Path(log_file)
+    for parent in path.parents:
+        if parent.name == "logs":
+            return parent
+    return path.parent
 
 
 AGGREGATORS: Dict[str, Callable[[pd.Series], float]] = {
@@ -262,6 +280,37 @@ def apply_smoothing(df: pd.DataFrame, window: int) -> pd.DataFrame:
 
 def ensure_output_dir(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def is_rank0_val_log(path: str) -> bool:
+    """Return True when the file looks like a rollout log for validation (rank0_val)."""
+    name = Path(path).name.lower()
+    return "_rank0_val" in name and name.endswith(".jsonl")
+
+
+def resolve_output_dir(
+    args_output_dir: Path,
+    log_file: str,
+    validation_mode: bool,
+    rank0_val_mode: bool,
+) -> Path:
+    """
+    Determine the output directory for a given log file, adjusting for validation
+    runs and _rank0_val logs.
+    """
+    if args_output_dir == Path("rl_metric_plots"):
+        if "rl_logging_board" in log_file:
+            output_dir = Path(log_file.replace("rl_logging_board", "rl_metric_plots")).parent
+        else:
+            output_dir = Path(log_file).parent / "rl_metric_plots"
+    else:
+        output_dir = args_output_dir
+
+    if validation_mode or rank0_val_mode:
+        if not output_dir.name.endswith("_val"):
+            output_dir = output_dir.with_name(f"{output_dir.name}_val")
+
+    return output_dir
 
 
 def is_validation_summary(path: str) -> bool:
@@ -505,128 +554,177 @@ def main() -> None:
     args = parse_args()
     log_path = os.path.abspath(args.log_file)
 
-    # Auto-search for log files if directory is provided
     if os.path.isdir(log_path):
         print(f"[info] Directory provided, searching for rollout_data_rank*.jsonl files...")
-        log_files = find_log_files(log_path)
-        if not log_files:
+        discovered_logs = find_log_files(log_path)
+        if not discovered_logs:
             raise FileNotFoundError(f"No rollout_data_rank*.jsonl files found in {log_path}")
-        # Use first found file by default (or combine all files)
-        log_file = os.path.join(log_path, log_files[0])
-        print(f"[info] Found {len(log_files)} log file(s), using: {log_file}")
-        if len(log_files) > 1:
-            print(f"[info] Other files found: {log_files[1:]}")
+        log_files = [
+            os.path.join(log_path, discovered_log) for discovered_log in discovered_logs
+        ]
+        log_files.sort(key=lambda p: (is_rank0_val_log(p), p))
+        print(f"[info] Found {len(log_files)} log file(s), processing all.")
     else:
-        log_file = log_path
+        log_files = [log_path]
 
-    validation_mode = is_validation_summary(log_file)
+    metrics: Optional[Dict[str, MetricFunc]] = None
 
-    # Determine output directory based on log file path if not specified
-    if args.output_dir == Path("rl_metric_plots"):  # User didn't specify custom output
-        # Try to place output alongside rl_logging_board using the actual log_file path
-        if "rl_logging_board" in log_file:
-            # Replace rl_logging_board with rl_metric_plots in the log file path
-            output_dir = Path(log_file.replace("rl_logging_board", "rl_metric_plots")).parent
-            print(f"[info] Output directory: {output_dir}")
-        else:
-            # Fallback: create rl_metric_plots in the same parent directory as log file
-            output_dir = Path(log_file).parent / "rl_metric_plots"
+    for index, log_file in enumerate(log_files, start=1):
+        print(f"[info] Processing log file ({index}/{len(log_files)}): {log_file}")
+
+        validation_mode = is_validation_summary(log_file)
+        rank0_val_mode = is_rank0_val_log(log_file) and not validation_mode
+        output_dir = resolve_output_dir(args.output_dir, log_file, validation_mode, rank0_val_mode)
+        if output_dir != args.output_dir:
             print(f"[info] Output directory: {output_dir}")
 
         if validation_mode:
-            output_dir = output_dir.with_name(f"{output_dir.name}_val")
-            print(f"[info] Validation run detected, adjusted output directory: {output_dir}")
-    else:
-        output_dir = args.output_dir
+            summary_df = load_validation_summary(Path(log_file))
+            plot_validation_lines(
+                summary_df,
+                output_dir,
+                column="acc_reward_mean",
+                title="Validation acc_reward mean@1 over steps",
+                filename="validation_acc_reward_mean.png",
+                ylabel="acc_reward (mean@1)",
+            )
+            plot_validation_lines(
+                summary_df,
+                output_dir,
+                column="tool_count_mean",
+                title="Validation tool count (mean@1) over steps",
+                filename="validation_tool_count_mean.png",
+                ylabel="tool count (mean@1)",
+            )
+            latest_df = (
+                summary_df.sort_values("step")
+                .groupby("dataset", as_index=False)
+                .tail(1)
+                .reset_index(drop=True)
+            )
+            plot_validation_bars(
+                latest_df,
+                output_dir,
+                column="num_samples",
+                title="Validation samples per dataset",
+                filename="validation_num_samples.png",
+                ylabel="num samples",
+            )
+            print("[info] Processed validation summary metrics.")
+            continue
 
-    if validation_mode:
-        summary_df = load_validation_summary(Path(log_file))
-        plot_validation_lines(
-            summary_df,
-            output_dir,
-            column="acc_reward_mean",
-            title="Validation acc_reward mean@1 over steps",
-            filename="validation_acc_reward_mean.png",
-            ylabel="acc_reward (mean@1)",
+        if metrics is None:
+            metrics = get_selected_metrics(args.metrics)
+            if not metrics:
+                raise ValueError("No metrics selected. Check --metrics argument.")
+
+        workers = args.workers
+        if args.sample_steps is not None and args.sample_steps < 10:
+            workers = 1
+            print(f"[info] Reducing workers to 1 due to small sample_steps ({args.sample_steps})")
+
+        print(f"[info] Loading log file: {log_file}")
+        step_payloads = read_jsonl_parallel(
+            file_path=log_file,
+            workers=workers,
+            start_step=args.start_step,
+            end_step=args.end_step,
+            step_freq=args.step_freq,
+            max_samples_each_step=args.max_samples_each_step,
+            keys_to_collect=None,  # Collect dynamically to satisfy lambda requirements
+            per_chunk_cap=args.per_chunk_cap,
+            verbose=True,
+            show_progress=True,  # Always show progress
+            key_defaults=None,
         )
-        plot_validation_lines(
-            summary_df,
-            output_dir,
-            column="tool_count_mean",
-            title="Validation tool count (mean@1) over steps",
-            filename="validation_tool_count_mean.png",
-            ylabel="tool count (mean@1)",
-        )
-        latest_df = (
-            summary_df.sort_values("step")
-            .groupby("dataset", as_index=False)
-            .tail(1)
-            .reset_index(drop=True)
-        )
-        plot_validation_bars(
-            latest_df,
-            output_dir,
-            column="num_samples",
-            title="Validation samples per dataset",
-            filename="validation_num_samples.png",
-            ylabel="num samples",
-        )
-        print("[info] Done.")
-        return
 
-    metrics = get_selected_metrics(args.metrics)
-    if not metrics:
-        raise ValueError("No metrics selected. Check --metrics argument.")
+        if not step_payloads:
+            raise ValueError(f"No payloads loaded from {log_file}")
 
-    # Reduce workers to 1 if sample_steps is small
-    workers = args.workers
-    if args.sample_steps is not None and args.sample_steps < 10:
-        workers = 1
-        print(f"[info] Reducing workers to 1 due to small sample_steps ({args.sample_steps})")
+        aggregator = args.aggregator
+        if aggregator not in AGGREGATORS:
+            raise ValueError(f"Unsupported aggregator: {aggregator}")
 
-    print(f"[info] Loading log file: {log_file}")
-    step_payloads = read_jsonl_parallel(
-        file_path=log_file,
-        workers=workers,
-        start_step=args.start_step,
-        end_step=args.end_step,
-        step_freq=args.step_freq,
-        max_samples_each_step=args.max_samples_each_step,
-        keys_to_collect=None,  # Collect dynamically to satisfy lambda requirements
-        per_chunk_cap=args.per_chunk_cap,
-        verbose=True,
-        show_progress=True,  # Always show progress
-        key_defaults=None,
-    )
+        ensure_output_dir(output_dir)
 
-    if not step_payloads:
-        raise RuntimeError("No data loaded from the JSONL file with the provided filters.")
+        all_rows = []
 
-    print(f"[info] Evaluating {len(metrics)} metric(s) across {len(step_payloads)} steps.")
-    metric_df = evaluate_metrics(
-        step_data=step_payloads,
-        metrics=metrics,
-        aggregator=args.aggregator,
-        sample_steps=args.sample_steps,
-    )
+        print(f"[info] Processing {len(step_payloads)} steps...")
+        for step, payloads in step_payloads.items():
+            for metric_name, metric_fn in metrics.items():
+                try:
+                    result = metric_fn(payloads)
+                except Exception as exc:  # pragma: no cover - metric implementations may vary
+                    print(f"[warn] Metric '{metric_name}' failed at step {step}: {exc}")
+                    continue
 
-    if metric_df.empty:
-        raise RuntimeError("No metric values produced; check metric selection or aggregator.")
+                for name, series, value in extract_metric_entries(metric_name, result, aggregator):
+                    all_rows.append(
+                        {
+                            "step": step,
+                            "metric": name,
+                            "series": series,
+                            "value": value,
+                        }
+                    )
 
-    metric_df = apply_smoothing(metric_df, max(args.smooth_window, 1))
+        if not all_rows:
+            print(f"[warn] No metric entries extracted for {log_file}")
+            continue
 
-    if args.csv_path:
-        args.csv_path.parent.mkdir(parents=True, exist_ok=True)
-        metric_df.to_csv(args.csv_path, index=False)
-        print(f"[info] Wrote aggregated metrics CSV: {args.csv_path}")
+        df = pd.DataFrame(all_rows, columns=["step", "metric", "series", "value"])
+        if rank0_val_mode:
+            df = df.copy()
+            series_str = df["series"].astype(str)
+            drop_mask = series_str.str.contains("__all_", regex=False) | series_str.str.contains(
+                "__filter_", regex=False
+            )
+            if drop_mask.any():
+                df = df[~drop_mask].copy()
+            if df.empty:
+                print(f"[warn] No usable metric entries after filtering for {log_file}")
+                continue
+            cleaned_series = df["series"].astype(str)
+            cleaned_series = cleaned_series.str.replace(
+                "__avg_acc_reward", "__acc_reward", regex=False
+            )
+            cleaned_series = cleaned_series.str.replace("avg_acc_reward", "acc_reward", regex=False)
+            df.loc[:, "series"] = cleaned_series
+        df = apply_smoothing(df, args.smooth_window)
 
-    if args.plot_backend == "matplotlib":
-        plot_with_matplotlib(metric_df, output_dir)
-    else:
-        plot_with_plotly(metric_df, output_dir)
+        pivoted = df.pivot_table(index="step", columns="metric", values="value_smoothed")
+        if args.csv_path is not None:
+            csv_path = args.csv_path
+            if rank0_val_mode:
+                csv_path = csv_path.with_name(f"{csv_path.stem}_val{csv_path.suffix}")
+            elif len(log_files) > 1 and index > 1:
+                csv_path = csv_path.with_name(f"{csv_path.stem}_{index}{csv_path.suffix}")
+            pivoted.to_csv(csv_path)
+            print(f"[info] Exported CSV: {csv_path}")
 
-    print("[info] Done.")
+        print("[info] Plotting metrics...")
+        if args.plot_backend == "matplotlib":
+            plot_with_matplotlib(df, output_dir)
+        else:
+            plot_with_plotly(df, output_dir)
 
+        sample_count = max(0, args.sample_export_count or 0)
+        if sample_count:
+            target_step = max(step_payloads)
+            step_data = step_payloads[target_step]
+            logs_root = locate_logs_root(log_file)
+            exports = export_step_samples(
+                step_data=step_data,
+                step=target_step,
+                cases_per_dataset=sample_count,
+                export_root=logs_root,
+                log_file=log_file,
+            )
+            if exports:
+                sample_dir = logs_root / "rl_sample_vis" / str(target_step)
+                print(f"[info] Saved {len(exports)} sample JSON file(s) to {sample_dir}")
+            else:
+                print(f"[warn] Unable to export sample JSON files for step {target_step}.")
 
 if __name__ == "__main__":
     main()

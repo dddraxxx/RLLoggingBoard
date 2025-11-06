@@ -112,10 +112,16 @@ def _compute_curriculum_rewards(step_data):
         if task_type:
             break
 
-    if not task_type:
-        return {}
-
     result = {}
+
+    if acc_rewards:
+        valid_acc = [v for v in acc_rewards if v is not None]
+        if valid_acc:
+            result['avg_acc_reward'] = np.mean(valid_acc)
+
+    if not task_type:
+        return result
+
     all_key, filter_key, answer_key = TASK_REWARD_KEYS[task_type]
 
     # Collect all_reward values
@@ -129,12 +135,6 @@ def _compute_curriculum_rewards(step_data):
         filter_rewards = [v for v in step_data[filter_key] if v is not None]
         if filter_rewards:
             result[filter_key] = filter_rewards
-
-    # Average acc_reward
-    if acc_rewards:
-        valid_acc = [v for v in acc_rewards if v is not None]
-        if valid_acc:
-            result['avg_acc_reward'] = np.mean(valid_acc)
 
     return result
 
