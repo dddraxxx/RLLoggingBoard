@@ -19,6 +19,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from PIL import Image
 
 # Prefer non-interactive backend for matplotlib in CLI environments
 import matplotlib
@@ -137,11 +138,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sample-export-count",
+        "-sec",
         type=int,
         default=3,
         help=(
             "If >0, export this many samples per data source as JSON under logs/rl_sample_vis."
         ),
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=2025,
+        help="Random seed for selecting which samples are exported (useful for reproducibility).",
     )
 
     return parser.parse_args()
@@ -433,15 +441,16 @@ def plot_validation_lines(
     print(f"[info] Saved validation plot: {fig_path}")
 
 
-def plot_with_matplotlib(df: pd.DataFrame, output_dir: Path) -> None:
+def plot_with_matplotlib(df: pd.DataFrame, output_dir: Path) -> Dict[str, List[Path]]:
     ensure_output_dir(output_dir)
     unique_metrics = df["metric"].unique()
+    datasource_to_paths: Dict[str, List[Path]] = defaultdict(list)
 
     for metric_name in unique_metrics:
         metric_df = df[df["metric"] == metric_name].sort_values("step")
 
         # Check if we need to split by datasource (look for __ separator in series)
-        datasource_groups = {}
+        datasource_groups: Dict[str, List[str]] = {}
         for series_name in metric_df["series"].unique():
             if "__" in str(series_name):
                 # Extract datasource from series like "sealvqa__max_tool_count"
@@ -485,6 +494,78 @@ def plot_with_matplotlib(df: pd.DataFrame, output_dir: Path) -> None:
             fig.savefig(fig_path)
             plt.close(fig)
             print(f"[info] Saved matplotlib plot: {fig_path}")
+            datasource_to_paths[str(datasource)].append(fig_path)
+
+    return datasource_to_paths
+
+
+def build_datasource_grid(
+    row_to_paths: Dict[str, List[Path]],
+    output_dir: Path,
+    filename: str = "combined_metrics_grid.png",
+) -> Optional[Path]:
+    """Merge individual datasource plots into a torchvision-like grid image."""
+    ordered_rows = [
+        (row, [Path(path) for path in paths if Path(path).is_file()])
+        for row, paths in sorted(row_to_paths.items(), key=lambda item: item[0])
+        if paths
+    ]
+
+    if not ordered_rows:
+        print("[info] No datasource plots available for grid aggregation.")
+        return None
+
+    rows = len(ordered_rows)
+    cols = max(len(paths) for _, paths in ordered_rows)
+    if cols == 0:
+        print("[warn] Datasource plot grid skipped because no plots were found.")
+        return None
+
+    loaded_rows: List[List[Image.Image]] = []
+    max_w, max_h = 0, 0
+    for _, paths in ordered_rows:
+        row_images: List[Image.Image] = []
+        for path in paths:
+            try:
+                with Image.open(path) as img:
+                    copy_img = img.convert("RGB")
+            except Exception as exc:  # pragma: no cover - IO errors are rare
+                print(f"[warn] Failed to open {path} for grid: {exc}")
+                continue
+            row_images.append(copy_img)
+            max_w = max(max_w, copy_img.width)
+            max_h = max(max_h, copy_img.height)
+        loaded_rows.append(row_images)
+
+    if max_w == 0 or max_h == 0:
+        print("[warn] Datasource plot grid skipped because images could not be loaded.")
+        return None
+
+    padding = 6
+    canvas_width = cols * max_w + padding * (cols + 1)
+    canvas_height = rows * max_h + padding * (rows + 1)
+    canvas = Image.new("RGB", (canvas_width, canvas_height), color=(255, 255, 255))
+
+    for row_idx, row_images in enumerate(loaded_rows):
+        for col_idx in range(cols):
+            x0 = padding + col_idx * (max_w + padding)
+            y0 = padding + row_idx * (max_h + padding)
+            if col_idx >= len(row_images):
+                continue
+
+            img = row_images[col_idx]
+            if img.width != max_w or img.height != max_h:
+                padded = Image.new("RGB", (max_w, max_h), color=(255, 255, 255))
+                offset = ((max_w - img.width) // 2, (max_h - img.height) // 2)
+                padded.paste(img, offset)
+                img = padded
+
+            canvas.paste(img, (x0, y0))
+
+    combined_path = output_dir / filename
+    canvas.save(combined_path, format="PNG")
+    print(f"[info] Saved combined datasource grid: {combined_path}")
+    return combined_path
 
 
 def plot_with_plotly(df: pd.DataFrame, output_dir: Path) -> None:
@@ -704,7 +785,9 @@ def main() -> None:
 
         print("[info] Plotting metrics...")
         if args.plot_backend == "matplotlib":
-            plot_with_matplotlib(df, output_dir)
+            datasource_paths = plot_with_matplotlib(df, output_dir)
+            grid_name = "combined_metrics_grid_val.png" if rank0_val_mode else "combined_metrics_grid.png"
+            build_datasource_grid(datasource_paths, output_dir, grid_name)
         else:
             plot_with_plotly(df, output_dir)
 
@@ -719,6 +802,7 @@ def main() -> None:
                 cases_per_dataset=sample_count,
                 export_root=logs_root,
                 log_file=log_file,
+                seed=args.sample_seed,
             )
             if exports:
                 sample_dir = logs_root / "rl_sample_vis" / str(target_step)

@@ -410,6 +410,7 @@ def export_step_samples(
     cases_per_dataset: int,
     export_root: Path,
     log_file: str,
+    seed: Optional[int] = None,
 ) -> List[Path]:
     if cases_per_dataset <= 0 or not step_data:
         return []
@@ -458,7 +459,8 @@ def export_step_samples(
     assets_dir = step_dir / "images"
 
     for dataset, samples in dataset_samples.items():
-        rng = random.Random(f"{step}:{dataset}")
+        rng_seed = f"{seed}:{step}:{dataset}" if seed is not None else f"{step}:{dataset}"
+        rng = random.Random(rng_seed)
         shuffled = list(samples)
         rng.shuffle(shuffled)
         subset = shuffled[: cases_per_dataset]
