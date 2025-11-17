@@ -42,6 +42,19 @@ MetricFunc = Callable[[Dict[str, List]], Dict[str, List]]
 VALIDATION_PATH_KEYWORD = "validation_"
 
 
+def _str2bool(value: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    truthy = {"true", "t", "1", "yes", "y"}
+    falsy = {"false", "f", "0", "no", "n"}
+    if normalized in truthy:
+        return True
+    if normalized in falsy:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got '{value}'.")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute and plot RL logging metrics using lambda examples.",
@@ -150,6 +163,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2025,
         help="Random seed for selecting which samples are exported (useful for reproducibility).",
+    )
+    parser.add_argument(
+        "--sample-fixed-seed",
+        "-sf",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help=(
+            "Boolean flag controlling whether the sample seed stays fixed "
+            "(true uses the provided seed only, false mixes in dataset/step). Default: true."
+        ),
     )
 
     return parser.parse_args()
@@ -803,6 +828,7 @@ def main() -> None:
                 export_root=logs_root,
                 log_file=log_file,
                 seed=args.sample_seed,
+                fixed_seed=args.sample_fixed_seed,
             )
             if exports:
                 sample_dir = logs_root / "rl_sample_vis" / str(target_step)

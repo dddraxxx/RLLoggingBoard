@@ -11,7 +11,7 @@ import shutil
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 try:  # pillow is optional but preferred for resizing
     from PIL import Image
@@ -404,6 +404,22 @@ def _md_path(path: Optional[str]) -> Optional[str]:
     return (Path("..") / Path(path)).as_posix()
 
 
+def _primary_image_path(sample: SampleRecord) -> str:
+    if not sample.images:
+        return ""
+    first = sample.images[0]
+    return str(first.get("path") or "")
+
+
+def _sample_sort_key(sample: SampleRecord) -> Tuple[str, str, str, str]:
+    return (
+        sample.data_source or "",
+        _primary_image_path(sample),
+        (sample.prompt or "").strip(),
+        sample.ground_truth or "",
+    )
+
+
 def export_step_samples(
     step_data: Dict[str, Sequence[Any]],
     step: int,
@@ -411,6 +427,7 @@ def export_step_samples(
     export_root: Path,
     log_file: str,
     seed: Optional[int] = None,
+    fixed_seed: bool = False,
 ) -> List[Path]:
     if cases_per_dataset <= 0 or not step_data:
         return []
@@ -459,7 +476,18 @@ def export_step_samples(
     assets_dir = step_dir / "images"
 
     for dataset, samples in dataset_samples.items():
-        rng_seed = f"{seed}:{step}:{dataset}" if seed is not None else f"{step}:{dataset}"
+        samples.sort(key=_sample_sort_key)
+
+        if fixed_seed:
+            rng_seed: Union[int, str]
+            if seed is None:
+                rng_seed = 0
+            else:
+                rng_seed = seed
+        else:
+            base = f"{step}:{dataset}"
+            rng_seed = f"{seed}:{base}" if seed is not None else base
+
         rng = random.Random(rng_seed)
         shuffled = list(samples)
         rng.shuffle(shuffled)
