@@ -139,6 +139,38 @@ def parse_args() -> argparse.Namespace:
         help="Which plotting backend to use. Plotly requires the package to be installed.",
     )
     parser.add_argument(
+        "--max-jsonl-num",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of rollout JSONL files to load when --log-file points to a "
+            "directory. Use <=0 or omit for no limit."
+        ),
+    )
+    parser.add_argument(
+        "--plot-metrics",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help=(
+            "Whether to render plots. Set to false to skip plotting and export per-series CSVs "
+            "into a csv subdirectory inside the output directory."
+        ),
+    )
+    parser.add_argument(
+        "--export-series-csv",
+        "-esc",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help=(
+            "If true, always write per-series CSVs under output_dir/csv in addition to the "
+            "aggregated pivot export."
+        ),
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable tqdm progress bars during JSONL loading.",
@@ -209,6 +241,36 @@ AGGREGATORS: Dict[str, Callable[[pd.Series], float]] = {
     "min": lambda s: float(s.min()),
     "count": lambda s: float(s.count()),
 }
+
+
+def _sanitize_filename_component(value: object) -> str:
+    text = str(value) if value is not None else "series"
+    sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+    sanitized = sanitized.strip("_")
+    return sanitized or "series"
+
+
+def export_metric_series_csv(
+    df: pd.DataFrame,
+    output_dir: Path,
+    subdir_name: str = "csv",
+) -> List[Path]:
+    """Persist per-metric series data as CSV for later reuse."""
+    csv_dir = output_dir / subdir_name
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_paths: List[Path] = []
+    grouped = df.sort_values("step").groupby(["metric", "series"], sort=True)
+    for (metric_name, series_name), group in grouped:
+        safe_metric = _sanitize_filename_component(metric_name)
+        safe_series = _sanitize_filename_component(series_name)
+        filename = f"{safe_metric}__{safe_series}.csv"
+        csv_path = csv_dir / filename
+        export_df = group[["step", "value", "value_smoothed"]].copy()
+        export_df.to_csv(csv_path, index=False)
+        exported_paths.append(csv_path)
+
+    return exported_paths
 
 
 def flatten_numeric(value: object) -> List[float]:
@@ -673,6 +735,15 @@ def main() -> None:
     else:
         log_files = [log_path]
 
+    if args.max_jsonl_num is not None and args.max_jsonl_num > 0:
+        original_count = len(log_files)
+        log_files = log_files[: args.max_jsonl_num]
+        if len(log_files) < original_count:
+            print(
+                "[info] Limiting processing to the first "
+                f"{len(log_files)} JSONL file(s) per --max-jsonl-num"
+            )
+
     metrics: Optional[Dict[str, MetricFunc]] = None
 
     for index, log_file in enumerate(log_files, start=1):
@@ -808,13 +879,40 @@ def main() -> None:
             pivoted.to_csv(csv_path)
             print(f"[info] Exported CSV: {csv_path}")
 
-        print("[info] Plotting metrics...")
-        if args.plot_backend == "matplotlib":
-            datasource_paths = plot_with_matplotlib(df, output_dir)
-            grid_name = "combined_metrics_grid_val.png" if rank0_val_mode else "combined_metrics_grid.png"
-            build_datasource_grid(datasource_paths, output_dir, grid_name)
+        if args.plot_metrics:
+            print("[info] Plotting metrics...")
+            if args.plot_backend == "matplotlib":
+                datasource_paths = plot_with_matplotlib(df, output_dir)
+                grid_name = (
+                    "combined_metrics_grid_val.png"
+                    if rank0_val_mode
+                    else "combined_metrics_grid.png"
+                )
+                build_datasource_grid(datasource_paths, output_dir, grid_name)
+            else:
+                plot_with_plotly(df, output_dir)
         else:
-            plot_with_plotly(df, output_dir)
+            print("[info] Plotting skipped (--plot-metrics false).")
+
+        should_export_series = (not args.plot_metrics) or args.export_series_csv
+        if should_export_series:
+            csv_exports = export_metric_series_csv(df, output_dir)
+            csv_dir = output_dir / "csv"
+            if csv_exports:
+                reasons = []
+                if not args.plot_metrics:
+                    reasons.append("--plot-metrics false")
+                if args.export_series_csv:
+                    reasons.append("--export-series-csv true")
+                reason_text = " and ".join(reasons) if reasons else "series export request"
+                print(
+                    f"[info] Exported {len(csv_exports)} per-series CSV file(s) to {csv_dir} "
+                    f"({reason_text})."
+                )
+            else:
+                print(
+                    "[warn] Requested per-series CSV export but no data was available to write."
+                )
 
         sample_count = max(0, args.sample_export_count or 0)
         if sample_count:
